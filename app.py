@@ -3,7 +3,9 @@ import os
 import uuid
 from config import Config
 
-app = Flask(__name__)
+app = Flask(__name__, 
+           template_folder='app/templates',
+           static_folder='app/static')
 app.config.from_object(Config)
 
 @app.route('/')

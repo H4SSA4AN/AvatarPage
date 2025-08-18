@@ -121,6 +121,18 @@
         .hidden {
             display: none;
         }
+
+        .debug-info {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            text-align: left;
+            font-size: 0.8rem;
+            color: #495057;
+            font-family: monospace;
+        }
     </style>
 </head>
 <body 
@@ -147,11 +159,41 @@
             </video>
         </div>
         
+        <div id="debugInfo" class="debug-info">
+            <strong>Debug Info:</strong><br>
+            API Base: {{ config.api_base }}<br>
+            Avatar ID: {{ config.avatar_id }}<br>
+            Muse Mode: {{ config.muse_mode }}<br>
+            <span id="jsStatus">JavaScript: Loading...</span>
+        </div>
+        
         <div class="footer">
             Backend integration required for full functionality
         </div>
     </div>
 
-    <script type="module" src="/static/js/main.js"></script>
+    <script>
+        // Basic error handling and debugging
+        console.log('Page loaded, attempting to load main.js module...');
+        
+        // Update debug info
+        document.getElementById('jsStatus').textContent = 'JavaScript: Loading main.js...';
+        
+        // Try to load the main module
+        import('/static/js/main.js')
+            .then(() => {
+                console.log('Main.js loaded successfully');
+                document.getElementById('jsStatus').textContent = 'JavaScript: Loaded successfully';
+            })
+            .catch(error => {
+                console.error('Failed to load main.js:', error);
+                document.getElementById('jsStatus').textContent = 'JavaScript: Failed to load - ' + error.message;
+                
+                // Show error in status
+                const statusEl = document.getElementById('status');
+                statusEl.textContent = 'Error: JS failed to load';
+                statusEl.className = 'status-badge status-error';
+            });
+    </script>
 </body>
 </html>
