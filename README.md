@@ -1,190 +1,138 @@
-# Avatar Chat - Minimal Flask Website
+# Audio Recorder Web Application
 
-A minimal Flask website for real-time avatar chat with microphone recording, OpenAI integration, and video streaming capabilities.
+A modern Flask web application that allows users to record audio from their microphone and save it as WAV files.
 
 ## Features
 
-- **Single-page UI**: Clean, centered interface with mic button, status badge, and video player
-- **Audio Recording**: Records microphone audio in ~250ms chunks using MediaRecorder with Opus codec
-- **OpenAI Integration**: Server-side chat processing (API key kept secure)
-- **Video Streaming**: Support for both MSE streaming and file playback modes
-- **Modular Architecture**: Clean separation of UI, browser logic, and Flask routes
-- **ES6 Modules**: Vanilla JavaScript with ES modules, no bundlers required
+- 🎤 Real-time audio recording using Web Audio API
+- ⏱️ Recording timer with visual feedback
+- 💾 Save recordings as WAV files with timestamps
+- 📁 View and download saved recordings
+- 🎨 Modern, responsive UI with beautiful animations
+- 📱 Mobile-friendly design
 
-## Tech Stack
+## Prerequisites
 
-- **Backend**: Python 3.11+, Flask (no extensions beyond built-ins)
-- **Frontend**: Vanilla JavaScript (ES modules), HTML5, CSS3
-- **Audio**: MediaRecorder API with `audio/webm;codecs=opus`
-- **Video**: MediaSource Extensions (MSE) for streaming, standard video playback for files
-- **Configuration**: Environment variables with sensible defaults
+- Python 3.7 or higher
+- A modern web browser with microphone access
+- Microphone hardware
 
-## Project Structure
+## Installation
+
+1. **Clone or download the project files**
+
+2. **Install Python dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Run the Flask application:**
+   ```bash
+   python app.py
+   ```
+
+4. **Open your web browser and navigate to:**
+   ```
+   http://localhost:5000
+   ```
+
+## Usage
+
+### Recording Audio
+
+1. **Start Recording:** Click the "🎙️ Start Recording" button
+   - The browser will request microphone permission
+   - The button will turn red and pulse while recording
+   - A timer will show the recording duration
+
+2. **Stop Recording:** Click the "⏹️ Stop Recording" button
+   - Recording will stop and an audio player will appear
+   - You can preview your recording
+
+3. **Save Recording:** Click the "💾 Save Recording" button
+   - The recording will be converted to WAV format
+   - Saved with a timestamp in the filename
+   - Appears in the recordings list
+
+### Managing Recordings
+
+- **View Recordings:** All saved recordings appear in the "📁 Saved Recordings" section
+- **Download Recordings:** Click the "📥 Download" button next to any recording
+- **Refresh List:** Click "🔄 Refresh List" to update the recordings list
+
+## File Structure
 
 ```
 AvatarPage/
 ├── app.py                 # Main Flask application
-├── config.py             # Configuration management
-├── requirements.txt      # Python dependencies
-├── env.example          # Environment variables template
-├── README.md            # This file
-└── app/
-    ├── templates/
-    │   └── index.html   # Main HTML template
-    └── static/
-        └── js/
-            ├── main.js      # Main application logic
-            ├── state.js     # State management
-            ├── mic.js       # Microphone recording
-            ├── player.js    # Video player (MSE/file)
-            ├── ws.js        # WebSocket placeholder
-            └── openai.js    # OpenAI API client
+├── requirements.txt       # Python dependencies
+├── README.md             # This file
+├── templates/
+│   └── index.html        # Main web interface
+└── uploads/              # Directory for saved recordings (created automatically)
 ```
 
-## Setup Instructions
+## Technical Details
 
-### 1. Install Dependencies
+### Backend (Flask)
+- **Routes:**
+  - `/` - Main page
+  - `/save_audio` - Save audio recording (POST)
+  - `/download/<filename>` - Download saved recording
+  - `/list_recordings` - Get list of saved recordings
 
-```bash
-pip install -r requirements.txt
-```
+### Frontend (HTML/JavaScript)
+- **Web Audio API** for microphone access
+- **MediaRecorder API** for audio recording
+- **Base64 encoding** for data transfer
+- **WAV format conversion** using Web Audio API
+- **Responsive CSS** with modern design
 
-### 2. Configure Environment
+### Audio Format
+- **Input:** WebM audio from browser
+- **Output:** WAV format (16-bit PCM, 44.1kHz)
+- **Conversion:** Client-side using Web Audio API
 
-Copy the example environment file and configure your settings:
+## Browser Compatibility
 
-```bash
-cp env.example .env
-```
+This application works best in modern browsers that support:
+- Web Audio API
+- MediaRecorder API
+- getUserMedia API
 
-Edit `.env` with your configuration:
+**Recommended browsers:**
+- Chrome 66+
+- Firefox 60+
+- Safari 14+
+- Edge 79+
 
-```env
-# API Configuration
-API_BASE=http://localhost:5000
+## Security Notes
 
-# Avatar Configuration
-DEFAULT_AVATAR_ID=default-01
+- The application runs locally and doesn't send audio data to external servers
+- Audio files are stored locally in the `uploads/` directory
+- Microphone access requires user permission in the browser
 
-# OpenAI Configuration (uncomment and add your key)
-# OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-3.5-turbo
+## Troubleshooting
 
-# Musetalk Configuration
-MUSE_MODE=file  # 'mse' or 'file'
-MUSE_STREAM_URL=ws://localhost:8080/stream
-MUSE_FILE_URL=http://localhost:8080/video
+### Microphone Access Issues
+- Ensure your browser has permission to access the microphone
+- Check that your microphone is working and not muted
+- Try refreshing the page and granting permission again
 
-# Flask Configuration
-SECRET_KEY=your-secret-key-here
-```
+### Recording Not Saving
+- Check that the `uploads/` directory exists and is writable
+- Ensure you have sufficient disk space
+- Check the browser console for JavaScript errors
 
-### 3. Run the Application
-
-```bash
-python app.py
-```
-
-The application will be available at `http://localhost:5000`
-
-## User Flow (MVP)
-
-1. **User presses/holds mic** → Browser records audio chunks (250ms)
-2. **UI shows status transitions**: idle → recording → processing → streaming
-3. **OpenAI Integration**: Browser sends captured audio/text to `/api/openai/chat`
-4. **Musetalk Integration**: Browser connects to WS for MSE streaming or fetches video file
-5. **Video playback**: Video element plays the incoming stream/file
-
-## API Endpoints
-
-### GET `/`
-Renders the main page with injected configuration (data attributes on `<body>`)
-
-### GET `/health`
-Returns JSON health check: `{"ok": true}`
-
-### POST `/api/session`
-Creates a new session and returns a random session ID
-
-### POST `/api/openai/chat`
-Accepts `{"text": "<user text>"}` and returns `{"reply": "<assistant response>"}`
-
-### POST `/api/muse/start`
-Accepts `{"sessionId": "...", "avatarId": "...", "text": "..."}` and returns `{"mode": "mse"|"file"}`
-
-## JavaScript Modules
-
-### `state.js`
-Manages application state and UI updates:
-- Status badge text transitions
-- Mic button state
-- Session management
-- Assistant text display
-
-### `mic.js`
-Handles microphone recording:
-- MediaRecorder with `audio/webm;codecs=opus`
-- 250ms audio chunks
-- Start/stop functionality with callbacks
-
-### `player.js`
-Video playback functionality:
-- MSE path: MediaSource + SourceBuffer with `video/webm;codecs="vp8"`
-- File path: Standard video element playback
-- FIFO queue for fragment management
-- Error handling and fallbacks
-
-### `ws.js`
-WebSocket placeholder for future Musetalk integration:
-- URL computation from API base and session ID
-- Placeholder connection handlers
-- Ready for real WebSocket implementation
-
-### `openai.js`
-OpenAI API client:
-- Server-side API calls (no keys in browser)
-- Chat request handling
-- Error management
-
-### `main.js`
-Main application orchestrator:
-- Component initialization
-- User interaction handling
-- Flow coordination
-- Configuration management
-
-## Configuration
-
-The application reads configuration from environment variables and injects them as data attributes on the `<body>` element:
-
-- `data-api-base`: Base URL for API calls
-- `data-avatar`: Default avatar ID
-- `data-muse-mode`: Musetalk mode ('mse' or 'file')
-
-## Development Notes
-
-### TODOs for Real Integration
-
-1. **OpenAI Integration**: Replace placeholder in `/api/openai/chat` with actual OpenAI API calls
-2. **Speech-to-Text**: Add STT processing for audio chunks
-3. **WebSocket Streaming**: Implement real WebSocket connection in `ws.js`
-4. **Musetalk API**: Connect to actual Musetalk service for avatar generation
-5. **Error Handling**: Add comprehensive error handling and user feedback
-
-### Browser Compatibility
-
-- **MediaRecorder**: Modern browsers with Opus codec support
-- **MediaSource Extensions**: Chrome, Firefox, Safari (with limitations)
-- **WebSocket**: All modern browsers
-- **ES6 Modules**: Modern browsers (IE not supported)
-
-### Security Considerations
-
-- OpenAI API key is kept server-side only
-- Session IDs are randomly generated UUIDs
-- CORS should be configured for production deployment
-- HTTPS required for microphone access in production
+### Audio Quality Issues
+- Ensure your microphone is properly connected and configured
+- Check your system's audio settings
+- Try using a different browser
 
 ## License
 
-This project is provided as-is for educational and development purposes.
+This project is open source and available under the MIT License.
+
+## Contributing
+
+Feel free to submit issues, feature requests, or pull requests to improve this application.

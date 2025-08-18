@@ -1,67 +1,79 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_file
 import os
-import uuid
-from config import Config
+from datetime import datetime
+import base64
 
-app = Flask(__name__, 
-           template_folder='app/templates',
-           static_folder='app/static')
-app.config.from_object(Config)
+app = Flask(__name__)
+
+# Ensure uploads directory exists
+UPLOAD_FOLDER = 'uploads'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
 @app.route('/')
 def index():
-    """Render the main page with injected configuration."""
-    config_data = {
-        'api_base': app.config['API_BASE'],
-        'avatar_id': app.config['DEFAULT_AVATAR_ID'],
-        'muse_mode': app.config['MUSE_MODE']
-    }
-    return render_template('index.html', config=config_data)
+    return render_template('index.html')
 
-@app.route('/health')
-def health():
-    """Health check endpoint."""
-    return jsonify({"ok": True})
+@app.route('/save_audio', methods=['POST'])
+def save_audio():
+    try:
+        # Get the audio data from the request
+        audio_data = request.json.get('audio_data')
+        
+        if not audio_data:
+            return jsonify({'error': 'No audio data received'}), 400
+        
+        # Remove the data URL prefix to get just the base64 data
+        if audio_data.startswith('data:audio/wav;base64,'):
+            audio_data = audio_data.split(',')[1]
+        
+        # Decode the base64 data
+        audio_bytes = base64.b64decode(audio_data)
+        
+        # Generate a unique filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'recording_{timestamp}.wav'
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        
+        # Save the audio file
+        with open(filepath, 'wb') as f:
+            f.write(audio_bytes)
+        
+        return jsonify({
+            'success': True,
+            'filename': filename,
+            'message': f'Audio saved as {filename}'
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-@app.route('/api/session', methods=['POST'])
-def create_session():
-    """Create a new session and return session ID."""
-    session_id = str(uuid.uuid4())
-    return jsonify({"sessionId": session_id})
+@app.route('/download/<filename>')
+def download_file(filename):
+    try:
+        return send_file(
+            os.path.join(UPLOAD_FOLDER, filename),
+            as_attachment=True,
+            download_name=filename
+        )
+    except FileNotFoundError:
+        return jsonify({'error': 'File not found'}), 404
 
-@app.route('/api/openai/chat', methods=['POST'])
-def openai_chat():
-    """Handle OpenAI chat requests."""
-    data = request.get_json()
-    if not data or 'text' not in data:
-        return jsonify({"error": "Missing text parameter"}), 400
-    
-    user_text = data['text']
-    
-    # TODO: Call OpenAI API with OPENAI_API_KEY and OPENAI_MODEL
-    # For now, return placeholder response
-    reply = f"[OPENAI_REPLY_PLACEHOLDER] for: {user_text}"
-    
-    return jsonify({"reply": reply})
-
-@app.route('/api/muse/start', methods=['POST'])
-def muse_start():
-    """Start Musetalk generation."""
-    data = request.get_json()
-    if not data or 'sessionId' not in data:
-        return jsonify({"error": "Missing sessionId parameter"}), 400
-    
-    session_id = data['sessionId']
-    avatar_id = data.get('avatarId', app.config['DEFAULT_AVATAR_ID'])
-    text = data.get('text', '')
-    
-    # TODO: Call Musetalk API to start generation
-    # For now, return configured mode
-    return jsonify({
-        "mode": app.config['MUSE_MODE'],
-        "sessionId": session_id,
-        "avatarId": avatar_id
-    })
+@app.route('/list_recordings')
+def list_recordings():
+    try:
+        files = []
+        for filename in os.listdir(UPLOAD_FOLDER):
+            if filename.endswith('.wav'):
+                filepath = os.path.join(UPLOAD_FOLDER, filename)
+                files.append({
+                    'filename': filename,
+                    'size': os.path.getsize(filepath),
+                    'created': datetime.fromtimestamp(os.path.getctime(filepath)).strftime('%Y-%m-%d %H:%M:%S')
+                })
+        return jsonify({'recordings': files})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

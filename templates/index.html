@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Recorder</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            text-align: center;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            font-weight: 300;
+        }
+
+        .recorder-section {
+            margin-bottom: 40px;
+        }
+
+        .record-button {
+            background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            padding: 20px 40px;
+            font-size: 1.2em;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin: 10px;
+            min-width: 120px;
+        }
+
+        .record-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+        }
+
+        .record-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .record-button.recording {
+            background: linear-gradient(45deg, #ff4757, #ff3838);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+
+        .status {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 10px;
+            font-weight: 500;
+        }
+
+        .status.recording {
+            background: #ffeaa7;
+            color: #d63031;
+        }
+
+        .status.success {
+            background: #55a3ff;
+            color: white;
+        }
+
+        .status.error {
+            background: #ff7675;
+            color: white;
+        }
+
+        .audio-player {
+            margin: 20px 0;
+            width: 100%;
+        }
+
+
+
+        .hidden {
+            display: none;
+        }
+
+        .timer {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #333;
+            margin: 20px 0;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Avatar Chat</h1>
+        
+        <div class="recorder-section">
+            <div class="timer" id="timer">00:00</div>
+            
+            <div class="controls">
+                <button class="record-button" id="recordButton">
+                    🎙️ Start Recording
+                </button>
+                <button class="record-button" id="saveButton" disabled>
+                    💾 Save Recording
+                </button>
+            </div>
+            
+            <div class="status hidden" id="status"></div>
+            
+            <audio class="audio-player hidden" id="audioPlayer" controls></audio>
+        </div>
+        
+
+    </div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioBlob;
+        let startTime;
+        let timerInterval;
+
+        const recordButton = document.getElementById('recordButton');
+        const saveButton = document.getElementById('saveButton');
+        const status = document.getElementById('status');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const timer = document.getElementById('timer');
+
+        recordButton.addEventListener('click', toggleRecording);
+        saveButton.addEventListener('click', saveRecording);
+
+        let isRecording = false;
+
+        async function toggleRecording() {
+            if (!isRecording) {
+                // Start recording
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream, {
+                        mimeType: 'audio/webm;codecs=opus'
+                    });
+
+                    audioChunks = [];
+                    mediaRecorder.ondataavailable = (event) => {
+                        audioChunks.push(event.data);
+                    };
+
+                    mediaRecorder.onstop = () => {
+                        audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        const audioUrl = URL.createObjectURL(audioBlob);
+                        audioPlayer.src = audioUrl;
+                        audioPlayer.classList.remove('hidden');
+                        saveButton.disabled = false;
+                    };
+
+                    mediaRecorder.start();
+                    startTime = Date.now();
+                    startTimer();
+                    
+                    isRecording = true;
+                    recordButton.textContent = '⏹️ Stop Recording';
+                    recordButton.classList.add('recording');
+                    
+                    showStatus('Recording...', 'recording');
+                    
+                } catch (error) {
+                    showStatus('Error accessing microphone: ' + error.message, 'error');
+                }
+            } else {
+                // Stop recording
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                    mediaRecorder.stop();
+                    mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                    
+                    stopTimer();
+                    isRecording = false;
+                    recordButton.textContent = '🎙️ Start Recording';
+                    recordButton.classList.remove('recording');
+                    
+                    showStatus('Recording stopped. You can now save or record again.', 'success');
+                }
+            }
+        }
+
+        async function saveRecording() {
+            if (!audioBlob) {
+                showStatus('No recording to save', 'error');
+                return;
+            }
+
+            try {
+                // Convert to WAV format using Web Audio API
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                // Create WAV file
+                const wavBlob = audioBufferToWav(audioBuffer);
+                const wavUrl = URL.createObjectURL(wavBlob);
+                
+                // Convert to base64
+                const reader = new FileReader();
+                reader.onload = async function() {
+                    const base64Data = reader.result;
+                    
+                    const response = await fetch('/save_audio', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            audio_data: base64Data
+                        })
+                    });
+
+                    const result = await response.json();
+                    
+                                         if (result.success) {
+                         showStatus(result.message, 'success');
+                         saveButton.disabled = true;
+                     } else {
+                         showStatus('Error saving recording: ' + result.error, 'error');
+                     }
+                };
+                reader.readAsDataURL(wavBlob);
+                
+            } catch (error) {
+                showStatus('Error saving recording: ' + error.message, 'error');
+            }
+        }
+
+        function startTimer() {
+            timerInterval = setInterval(() => {
+                const elapsed = Date.now() - startTime;
+                const minutes = Math.floor(elapsed / 60000);
+                const seconds = Math.floor((elapsed % 60000) / 1000);
+                timer.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            }, 1000);
+        }
+
+        function stopTimer() {
+            clearInterval(timerInterval);
+            timer.textContent = '00:00';
+        }
+
+        function showStatus(message, type) {
+            status.textContent = message;
+            status.className = `status ${type}`;
+            status.classList.remove('hidden');
+            
+            setTimeout(() => {
+                status.classList.add('hidden');
+            }, 5000);
+        }
+
+
+
+        // Convert AudioBuffer to WAV format
+        function audioBufferToWav(buffer) {
+            const length = buffer.length;
+            const numberOfChannels = buffer.numberOfChannels;
+            const sampleRate = buffer.sampleRate;
+            const arrayBuffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
+            const view = new DataView(arrayBuffer);
+            
+            // WAV header
+            const writeString = (offset, string) => {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
+            };
+            
+            writeString(0, 'RIFF');
+            view.setUint32(4, 36 + length * numberOfChannels * 2, true);
+            writeString(8, 'WAVE');
+            writeString(12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, numberOfChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * numberOfChannels * 2, true);
+            view.setUint16(32, numberOfChannels * 2, true);
+            view.setUint16(34, 16, true);
+            writeString(36, 'data');
+            view.setUint32(40, length * numberOfChannels * 2, true);
+            
+            // Convert float samples to 16-bit PCM
+            let offset = 44;
+            for (let i = 0; i < length; i++) {
+                for (let channel = 0; channel < numberOfChannels; channel++) {
+                    const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+                    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+                    offset += 2;
+                }
+            }
+            
+            return new Blob([arrayBuffer], { type: 'audio/wav' });
+        }
+    </script>
+</body>
+</html>
