@@ -4,6 +4,7 @@ from datetime import datetime
 import base64
 import requests
 import subprocess
+import io
 
 app = Flask(__name__)
 
@@ -19,8 +20,10 @@ def index():
 @app.route('/save_audio', methods=['POST'])
 def save_audio():
     try:
-        # Get the audio data from the request
+        # Get the audio data and settings from the request
         audio_data = request.json.get('audio_data')
+        fps = request.json.get('fps', '25')
+        batch_size = request.json.get('batch_size', '20')
         
         if not audio_data:
             return jsonify({'error': 'No audio data received'}), 400
@@ -57,8 +60,9 @@ def save_audio():
             }
             
             data = {
-                'video_path': 'data/video/1FrameVideo.mp4',
                 'stream_url': stream_url,
+                'fps': fps,
+                'batch_size': batch_size,
                 'bbox_shift': '0'
             }
             
@@ -133,82 +137,100 @@ def list_recordings():
 
 @app.route('/receive_frame', methods=['POST'])
 def receive_frame():
+    """Receive frames directly from MuseTalk service"""
     try:
-        print(f"DEBUG: Received frame request")
+        print(f"=== FRAME RECEPTION START ===")
+        print(f"DEBUG: Received frame buffer request")
         print(f"DEBUG: Request content type: {request.content_type}")
-        print(f"DEBUG: Request data: {request.get_data()[:200]}...")  # First 200 chars
         
-        # Check if it's JSON, form data, or raw image data
+        # Check if it's JSON data (new buffer format)
         if request.content_type and 'application/json' in request.content_type:
-            # JSON request
-            frame_data = request.json.get('frame_data')
-            frame_number = request.json.get('frame_number', 0)
-        elif request.content_type and ('image/' in request.content_type):
-            # Raw image data (JPEG, PNG, etc.)
-            frame_data = request.get_data()  # Get raw binary data
-            frame_number = 0  # Default frame number for raw image data
-        else:
-            # Form data request (like from curl)
-            frame_data = request.form.get('frame_data')
-            frame_number = request.form.get('frame_number', 0)
-        
-        print(f"DEBUG: Frame number: {frame_number}")
-        print(f"DEBUG: Frame data type: {type(frame_data)}")
-        print(f"DEBUG: Frame data length: {len(frame_data) if frame_data else 0}")
-        
-        if not frame_data:
-            print(f"DEBUG: No frame data received")
-            return jsonify({'error': 'No frame data received'}), 400
-        
-        # Handle different data types
-        if isinstance(frame_data, bytes):
-            # Raw binary image data (JPEG, PNG, etc.)
-            frame_bytes = frame_data
-            print(f"DEBUG: Using raw binary image data")
-        elif isinstance(frame_data, str):
-            # Base64 encoded data
-            # Remove the data URL prefix to get just the base64 data
-            if frame_data.startswith('data:image/png;base64,'):
-                frame_data = frame_data.split(',')[1]
-            elif frame_data.startswith('data:image/jpeg;base64,'):
-                frame_data = frame_data.split(',')[1]
+            buffer_data = request.json
             
-            print(f"DEBUG: About to decode base64 data")
-            # Decode the base64 data
-            frame_bytes = base64.b64decode(frame_data)
+            # Check if this is a finished signal
+            if buffer_data.get('status') == 'finished':
+                print(f"DEBUG: Received finished signal from MuseTalk")
+                print(f"DEBUG: Total frames sent: {buffer_data.get('total_frames_sent', 0)}")
+                
+                # Mark processing as complete
+                global processing_complete
+                processing_complete = True
+                print(f"DEBUG: Processing marked as complete from finished signal")
+                print(f"=== FRAME RECEPTION END (FINISHED) ===")
+                
+                return jsonify({
+                    'success': True,
+                    'status': 'finished',
+                    'total_frames_sent': buffer_data.get('total_frames_sent', 0),
+                    'processing_complete': True,
+                    'message': buffer_data.get('message', 'Streaming completed')
+                })
+            
+            # Handle regular frame buffer
+            frames = buffer_data.get('frames', [])
+            total_frames = buffer_data.get('total_frames', 0)
+            is_final = buffer_data.get('final', False)
+            
+            print(f"DEBUG: Received buffer with {len(frames)} frames")
+            print(f"DEBUG: Total frames in request: {total_frames}")
+            print(f"DEBUG: Is final: {is_final}")
+            
+            # Store frames in buffer for frontend access
+            global frame_buffer
+            frames_added = 0
+            for frame_info in frames:
+                frame_number = frame_info.get('frame_number', 0)
+                frame_data = frame_info.get('frame_data', '')
+                
+                if frame_data:
+                    # Add to buffer directly (keep as base64 for frontend)
+                    frame_buffer.append({
+                        'frame_number': frame_number,
+                        'frame_data': frame_data,  # Keep as base64 for frontend
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    frames_added += 1
+            
+            # Mark processing as complete if this is the final buffer
+            if is_final:
+                processing_complete = True
+                print(f"DEBUG: Processing marked as complete (final buffer)")
+            
+            print(f"DEBUG: Frames added to buffer: {frames_added}")
+            print(f"DEBUG: Buffer size after adding frames: {len(frame_buffer)}")
+            print(f"DEBUG: Processing complete status: {processing_complete}")
+            print(f"=== FRAME RECEPTION END ===")
+            
+            return jsonify({
+                'success': True,
+                'frames_received': len(frames),
+                'frames_added': frames_added,
+                'total_buffer_size': len(frame_buffer),
+                'processing_complete': processing_complete,
+                'message': f'Received {len(frames)} frames, added {frames_added} to buffer'
+            })
+        
         else:
-            print(f"DEBUG: Unknown frame data type")
-            return jsonify({'error': 'Unknown frame data type'}), 400
-        print(f"DEBUG: Decoded frame bytes length: {len(frame_bytes)}")
-        
-        # Create frames directory if it doesn't exist
-        frames_folder = os.path.join(UPLOAD_FOLDER, 'frames')
-        if not os.path.exists(frames_folder):
-            os.makedirs(frames_folder)
-        
-        # Determine file extension based on content type
-        if request.content_type and 'jpeg' in request.content_type:
-            extension = 'jpg'
-        elif request.content_type and 'png' in request.content_type:
-            extension = 'png'
-        else:
-            extension = 'png'  # Default to PNG
-        
-        # Save the frame with frame number
-        filename = f'frame_{frame_number:06d}.{extension}'
-        filepath = os.path.join(frames_folder, filename)
-        
-        print(f"DEBUG: Saving frame to: {filepath}")
-        with open(filepath, 'wb') as f:
-            f.write(frame_bytes)
-        
-        print(f"DEBUG: Frame saved successfully")
-        return jsonify({
-            'success': True,
-            'filename': filename,
-            'frame_number': frame_number,
-            'message': f'Frame {frame_number} saved as {filename}'
-        })
+            # Legacy single frame format (for backward compatibility)
+            print(f"DEBUG: Legacy single frame format detected")
+            frame_data = request.get_data()
+            frame_number = request.headers.get('Frame-Index', 0)
+            
+            if not frame_data:
+                return jsonify({'error': 'No frame data received'}), 400
+            
+            # Store frame in buffer for frontend access (no file saving)
+            frame_buffer.append({
+                'frame_number': int(frame_number),
+                'frame_data': base64.b64encode(frame_data).decode('utf-8'),
+                'timestamp': datetime.now().isoformat()
+            })
+            
+            return jsonify({
+                'success': True,
+                'frame_number': frame_number,
+                'message': f'Frame {frame_number} added to buffer'
+            })
         
     except Exception as e:
         print(f"DEBUG: Exception in receive_frame: {e}")
@@ -216,9 +238,26 @@ def receive_frame():
         print(f"DEBUG: Traceback: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
+# Global variables for frame management
+frame_buffer = []
+total_frames_expected = 0
+audio_duration = 0
+processing_complete = False
+
 @app.route('/process_audio', methods=['POST'])
 def process_audio():
     try:
+        # Get parameters from request
+        fps = request.json.get('fps', '25')
+        batch_size = request.json.get('batch_size', '20')
+        
+        # Reset frame buffer for new processing session
+        global frame_buffer, total_frames_expected, audio_duration, processing_complete
+        frame_buffer.clear()
+        total_frames_expected = 0
+        audio_duration = 0
+        processing_complete = False
+        
         # Check if input.wav exists
         audio_filepath = os.path.join(UPLOAD_FOLDER, 'input.wav')
         if not os.path.exists(audio_filepath):
@@ -234,8 +273,9 @@ def process_audio():
         }
         
         data = {
-            'video_path': 'data/video/yongen.mp4',
             'stream_url': stream_url,
+            'fps': fps,
+            'batch_size': batch_size,
             'bbox_shift': '0'
         }
         
@@ -258,6 +298,35 @@ def process_audio():
         return jsonify({'error': 'Could not connect to MuseTalk server. Make sure it is running on localhost:8085'}), 503
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/get_frame_buffer', methods=['GET'])
+def get_frame_buffer():
+    """Get all frames in the buffer (for frontend to check occasionally)"""
+    global frame_buffer, processing_complete
+    
+    return jsonify({
+        'frames': frame_buffer,
+        'buffer_size': len(frame_buffer),
+        'processing_complete': processing_complete
+    })
+
+@app.route('/clear_buffer', methods=['POST'])
+def clear_buffer():
+    """Clear the frame buffer"""
+    global frame_buffer, processing_complete
+    
+    print(f"=== BUFFER CLEAR ===")
+    print(f"DEBUG: Clearing frame buffer")
+    print(f"DEBUG: Buffer size before clearing: {len(frame_buffer)}")
+    
+    frame_buffer.clear()
+    processing_complete = False
+    
+    print(f"DEBUG: Buffer size after clearing: {len(frame_buffer)}")
+    print(f"DEBUG: Processing complete reset to: {processing_complete}")
+    print(f"=== BUFFER CLEAR END ===")
+    
+    return jsonify({'success': True, 'message': 'Buffer cleared'})
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
