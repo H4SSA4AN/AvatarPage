@@ -294,7 +294,7 @@
                     </div>
                     <div class="setting-item">
                         <label for="batchSizeInput">Batch Size:</label>
-                        <input type="number" id="batchSizeInput" value="5" min="1" max="50" class="setting-input">
+                        <input type="number" id="batchSizeInput" value="20" min="1" max="50" class="setting-input">
                     </div>
                 </div>
             </div>
@@ -332,12 +332,127 @@
         </div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <script>
         let mediaRecorder;
         let audioChunks = [];
         let audioBlob;
         let startTime;
         let timerInterval;
+        let socket; // WebSocket connection
+
+        // Initialize WebSocket connection
+        function initializeWebSocket() {
+            socket = io();
+            
+            socket.on('connect', function() {
+                console.log('Connected to WebSocket for real-time streaming');
+                updateStreamStatus('waiting', 'WebSocket connected - ready for frames');
+            });
+            
+            socket.on('disconnect', function() {
+                console.log('Disconnected from WebSocket');
+                updateStreamStatus('error', 'WebSocket disconnected - falling back to polling');
+                // Fall back to polling if WebSocket disconnects
+                startBufferPolling();
+            });
+            
+            socket.on('connect_error', function(error) {
+                console.log('WebSocket connection error:', error);
+                updateStreamStatus('error', 'WebSocket connection failed - using polling');
+                // Fall back to polling on connection error
+                startBufferPolling();
+            });
+            
+            socket.on('frame_update', function(data) {
+                handleWebSocketFrameUpdate(data);
+            });
+            
+            socket.on('status', function(data) {
+                console.log('WebSocket status:', data.message);
+            });
+        }
+        
+        // Handle WebSocket frame updates
+        function handleWebSocketFrameUpdate(data) {
+            console.log('WebSocket frame update received:', data);
+            
+            // Track start signal
+            if (data.start_signal_received && !start_signal_received_client) {
+                start_signal_received_client = true;
+                updateStreamStatus('streaming', 'Start signal received - ETA <= audio duration. Beginning playback...');
+                console.log('WebSocket: Start signal received - ETA <= audio duration');
+                
+                // Start playback immediately when start signal is received
+                if (frameBuffer.length > 0 && !isPlaying) {
+                    console.log('WebSocket: Start signal received and frames available, starting playback');
+                    currentFrameIndex = 0;
+                    startPlayback();
+                    
+                    // Also start playing the audio file
+                    if (audioPlayer.src) {
+                        console.log('Starting audio playback');
+                        audioPlayer.currentTime = 0; // Reset to beginning
+                        audioPlayer.play().catch(error => {
+                            console.log('Audio autoplay failed (browser policy):', error);
+                        });
+                    }
+                }
+            }
+
+            // Check if we have new frames (frames are sent after each batch)
+            if (data.frames && data.frames.length > 0) {
+                // Only add frames that aren't already in the buffer
+                const newFrames = data.frames.filter(newFrame => {
+                    return !frameBuffer.some(existingFrame => 
+                        existingFrame.frame_number === newFrame.frame_number
+                    );
+                });
+                
+                if (newFrames.length > 0) {
+                    // Add only the new frames to the buffer
+                    frameBuffer = frameBuffer.concat(newFrames);
+                    console.log(`WebSocket buffer update: ${frameBuffer.length} frames (${newFrames.length} new from batch ${data.batch_number || 'unknown'})`);
+                    
+                    // Start playback if start signal has been received and we're not already playing
+                    if (start_signal_received_client && !isPlaying) {
+                        console.log('WebSocket: Start signal received and new frames available, starting playback');
+                        if (currentFrameIndex === 0) {
+                            currentFrameIndex = 0;
+                        }
+                        startPlayback();
+                        
+                        // Also start playing the audio file if not already playing
+                        if (audioPlayer.src && audioPlayer.paused) {
+                            console.log('Starting audio playback with new frames');
+                            audioPlayer.currentTime = 0; // Reset to beginning
+                            audioPlayer.play().catch(error => {
+                                console.log('Audio autoplay failed (browser policy):', error);
+                            });
+                        }
+                    }
+                    
+                    // Enable play button if we have frames and not already playing
+                    if (frameBuffer.length > 0 && !isPlaying) {
+                        playButton.disabled = false;
+                    }
+                }
+            }
+            
+            // Check if processing is complete
+            if (data.processing_complete || data.status === 'finished') {
+                console.log('WebSocket: Processing complete');
+                processing_complete = true;
+                updateStreamStatus('streaming', 'Processing complete - all frames received');
+                
+                // If we're still playing and have reached the end, stop playback
+                if (isPlaying && currentFrameIndex >= frameBuffer.length) {
+                    console.log('Playback completed, stopping playback');
+                    stopPlayback();
+                    updateStreamStatus('waiting', 'Playback completed - all frames played');
+                }
+            }
+        }
 
                  const recordButton = document.getElementById('recordButton');
         const status = document.getElementById('status');
@@ -467,10 +582,16 @@
                          playButton.disabled = true;
                          pauseButton.disabled = true;
                          
-                         updateStreamStatus('waiting', 'Waiting for frames to start...');
+                         updateStreamStatus('waiting', 'Waiting for frames via WebSocket...');
                          
-                         // Start infrequent polling to check for new frames
-                         startBufferPolling();
+                         // Request frames via WebSocket instead of polling
+                         if (socket && socket.connected) {
+                             console.log('Requesting frames via WebSocket');
+                             socket.emit('request_frames');
+                         } else {
+                             console.log('WebSocket not connected, falling back to polling');
+                             startBufferPolling();
+                         }
                      } else {
                          showStatus('Error processing recording: ' + result.error, 'error');
                          updateStreamStatus('error', 'Processing failed');
@@ -511,18 +632,19 @@
         
 
                                   function clearFrameBuffer() {
-             // Stop any ongoing playback
-             stopPlayback();
-             
-             // Clear the frame buffer
-             frameBuffer = [];
-             
-             // Reset playback position
-             currentFrameIndex = 0;
-             
-             // Reset processing completion status
-             processing_complete = false;
+            // Stop any ongoing playback
+            stopPlayback();
             
+            // Clear the frame buffer
+            frameBuffer = [];
+            
+            // Reset playback position
+            currentFrameIndex = 0;
+            
+            // Reset processing completion status
+            processing_complete = false;
+            start_signal_received_client = false;
+           
             // Clear the canvas display
             const canvas = streamVideo;
             const ctx = canvas.getContext('2d');
@@ -535,13 +657,25 @@
             playbackFPS.textContent = '-';
             
             // Update status
-            updateStreamStatus('waiting', 'Buffer cleared');
+            updateStreamStatus('waiting', 'Buffer cleared - ready for WebSocket frames');
             
             // Also clear the backend buffer
             fetch('/clear_buffer', { method: 'POST' })
                 .then(response => response.json())
                 .then(data => console.log('Backend buffer cleared:', data))
                 .catch(error => console.error('Error clearing backend buffer:', error));
+        }
+
+        // Function to manually request frames via WebSocket
+        function requestFramesViaWebSocket() {
+            if (socket && socket.connected) {
+                console.log('Manually requesting frames via WebSocket');
+                socket.emit('request_frames');
+                updateStreamStatus('waiting', 'Requesting frames via WebSocket...');
+            } else {
+                console.log('WebSocket not available, using polling');
+                startBufferPolling();
+            }
         }
 
         function updateStreamStatus(type, message) {
@@ -564,6 +698,7 @@
          let isPlaying = false;
          let targetFPS = 25;
          let processing_complete = false;
+         let start_signal_received_client = false;
          
                  // Initialize canvas on page load
         function initializeCanvas() {
@@ -586,10 +721,16 @@
         }
         
         // Initialize canvas when page loads
-        window.addEventListener('load', initializeCanvas);
+        window.addEventListener('load', function() {
+            initializeCanvas();
+            initializeWebSocket(); // Initialize WebSocket connection
+        });
         
         // Also initialize on DOMContentLoaded for better reliability
-        document.addEventListener('DOMContentLoaded', initializeCanvas);
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeCanvas();
+            initializeWebSocket(); // Initialize WebSocket connection
+        });
         
         // Test function to verify canvas is working
         function testCanvas() {
@@ -694,62 +835,65 @@
         };
         document.body.appendChild(testFrameButton);
 
+        // Add WebSocket request button
+        const wsRequestButton = document.createElement('button');
+        wsRequestButton.textContent = '🔌 WS Request';
+        wsRequestButton.style.position = 'fixed';
+        wsRequestButton.style.top = '90px';
+        wsRequestButton.style.right = '10px';
+        wsRequestButton.style.zIndex = '1000';
+        wsRequestButton.onclick = requestFramesViaWebSocket;
+        document.body.appendChild(wsRequestButton);
+
                  function displayFrame(frameData, frameNumber) {
-             console.log('displayFrame called with frame number:', frameNumber, 'current index:', currentFrameIndex);
-             
-             // Create an image element to load the frame data
-             const img = new Image();
-             img.onload = function() {
-                 console.log('Image loaded, dimensions:', img.width, 'x', img.height);
-                 
-                 // Get canvas context
-                 const canvas = streamVideo;
-                 const ctx = canvas.getContext('2d');
-                 
-                 // Don't resize canvas every time, just use current dimensions
-                 console.log('Canvas dimensions:', canvas.width, 'x', canvas.height);
-                 
-                                   // Calculate scaling to fill entire canvas (cover mode)
-                  const scale = Math.max(
-                      canvas.width / img.width,
-                      canvas.height / img.height
-                  );
-                  
-                  const scaledWidth = img.width * scale;
-                  const scaledHeight = img.height * scale;
-                  
-                  console.log('Scaled dimensions:', scaledWidth, 'x', scaledHeight);
-                  
-                  // Center the image on canvas (may crop edges)
-                  const x = (canvas.width - scaledWidth) / 2;
-                  const y = (canvas.height - scaledHeight) / 2;
-                 
-                 // Clear canvas and draw the frame
-                 ctx.fillStyle = '#000000';
-                 ctx.fillRect(0, 0, canvas.width, canvas.height);
-                 ctx.drawImage(img, x, y, scaledWidth, scaledHeight);
-                 
-                 // Show canvas
-                 canvas.classList.add('active');
-                 
-                 // Update frame information
-                 frameCount.textContent = frameBuffer.length;
-                 currentFrame.textContent = frameNumber;
-                 playbackFPS.textContent = targetFPS;
-                 
-                                   // Update status
-                  updateStreamStatus('streaming', `Playing frame ${frameNumber} of ${frameBuffer.length} (index: ${currentFrameIndex})`);
-                 
-                 console.log('Frame displayed successfully');
-             };
-             
-             img.onerror = function() {
-                 console.error('Error loading image');
-             };
-             
-             // Load the frame data
-             img.src = URL.createObjectURL(new Blob([frameData], { type: 'image/jpeg' }));
-         }
+            // Create an image element to load the frame data
+            const img = new Image();
+            img.onload = function() {
+                // Get canvas context
+                const canvas = streamVideo;
+                const ctx = canvas.getContext('2d');
+                
+                // Calculate scaling to fill entire canvas (cover mode)
+                const scale = Math.max(
+                    canvas.width / img.width,
+                    canvas.height / img.height
+                );
+                
+                const scaledWidth = img.width * scale;
+                const scaledHeight = img.height * scale;
+                
+                // Center the image on canvas (may crop edges)
+                const x = (canvas.width - scaledWidth) / 2;
+                const y = (canvas.height - scaledHeight) / 2;
+                
+                // Clear canvas and draw the frame
+                ctx.fillStyle = '#000000';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, x, y, scaledWidth, scaledHeight);
+                
+                // Show canvas
+                canvas.classList.add('active');
+                
+                // Update frame information (less frequent updates for performance)
+                if (frameNumber % 5 === 0) {  // Update every 5 frames
+                    frameCount.textContent = frameBuffer.length;
+                    currentFrame.textContent = frameNumber;
+                    playbackFPS.textContent = targetFPS;
+                }
+                
+                // Update status less frequently for performance
+                if (frameNumber % 10 === 0) {
+                    updateStreamStatus('streaming', `Playing frame ${frameNumber} of ${frameBuffer.length}`);
+                }
+            };
+            
+            img.onerror = function() {
+                console.error('Error loading image for frame:', frameNumber);
+            };
+            
+            // Load the frame data
+            img.src = URL.createObjectURL(new Blob([frameData], { type: 'image/jpeg' }));
+        }
 
                  function startPlayback() {
              if (frameBuffer.length === 0) return;
@@ -925,8 +1069,8 @@
             if (bufferPollingInterval) {
                 clearInterval(bufferPollingInterval);
             }
-            bufferPollingInterval = setInterval(checkForNewFrames, 2000); // Check every 2 seconds
-            console.log('Started infrequent buffer checking');
+            bufferPollingInterval = setInterval(checkForNewFrames, 50); // Check every 50ms for maximum responsiveness
+            console.log('Started high-frequency buffer checking for immediate streaming');
         }
 
         function stopBufferPolling() {
@@ -943,38 +1087,53 @@
                 if (response.ok) {
                     const result = await response.json();
                     
-                    // Check if we have new frames
-                    if (result.frames.length > frameBuffer.length) {
-                        const newFrames = result.frames.slice(frameBuffer.length);
-                        const oldBufferLength = frameBuffer.length;
-                        frameBuffer = result.frames;
-                        console.log(`Buffer updated: ${frameBuffer.length} frames (${newFrames.length} new)`);
-                        
-                                                 // If this is the first time we're getting frames, start playback immediately
-                         if (oldBufferLength === 0 && newFrames.length > 0) {
-                             console.log('First frames received, starting playback immediately');
-                             currentFrameIndex = 0;
-                             startPlayback();
-                             
-                             // Also start playing the audio file
-                             if (audioPlayer.src) {
-                                 console.log('Starting audio playback');
-                                 audioPlayer.currentTime = 0; // Reset to beginning
-                                 audioPlayer.play().catch(error => {
-                                     console.log('Audio autoplay failed (browser policy):', error);
-                                 });
-                             }
-                         }
-                        
-                        // If we have frames but playback hasn't started yet, start it
-                        if (frameBuffer.length > 0 && !isPlaying) {
-                            console.log('Frames available but not playing, starting playback');
-                            startPlayback();
+                    // Track start signal
+                    if (result.start_signal_received && !start_signal_received_client) {
+                        start_signal_received_client = true;
+                        updateStreamStatus('streaming', 'Start signal received - ETA <= audio duration. Beginning playback...');
+                        // Increase polling frequency even more after start signal
+                        if (bufferPollingInterval) {
+                            clearInterval(bufferPollingInterval);
                         }
+                        bufferPollingInterval = setInterval(checkForNewFrames, 25); // Check every 25ms for maximum responsiveness
+                    }
+
+                    // Check if we have new frames (frames are sent after each batch)
+                    if (result.frames && result.frames.length > frameBuffer.length) {
+                        // Only add frames that aren't already in the buffer
+                        const newFrames = result.frames.filter(newFrame => {
+                            return !frameBuffer.some(existingFrame => 
+                                existingFrame.frame_number === newFrame.frame_number
+                            );
+                        });
                         
-                        // Enable play button if we have frames and not already playing
-                        if (frameBuffer.length > 0 && !isPlaying) {
-                            playButton.disabled = false;
+                        if (newFrames.length > 0) {
+                            // Add only the new frames to the buffer
+                            frameBuffer = frameBuffer.concat(newFrames);
+                            console.log(`Buffer updated: ${frameBuffer.length} frames (${newFrames.length} new)`);
+                            
+                            // Start playback if start signal has been received and we're not already playing
+                            if (start_signal_received_client && !isPlaying) {
+                                console.log('Start signal received and frames available, starting playback');
+                                if (currentFrameIndex === 0) {
+                                    currentFrameIndex = 0;
+                                }
+                                startPlayback();
+                                
+                                // Also start playing the audio file if not already playing
+                                if (audioPlayer.src && audioPlayer.paused) {
+                                    console.log('Starting audio playback');
+                                    audioPlayer.currentTime = 0; // Reset to beginning
+                                    audioPlayer.play().catch(error => {
+                                        console.log('Audio autoplay failed (browser policy):', error);
+                                    });
+                                }
+                            }
+                            
+                            // Enable play button if we have frames and not already playing
+                            if (frameBuffer.length > 0 && !isPlaying) {
+                                playButton.disabled = false;
+                            }
                         }
                     }
                     

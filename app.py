@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify, send_file
+from flask_socketio import SocketIO, emit
 import os
 from datetime import datetime
 import base64
@@ -7,11 +8,33 @@ import subprocess
 import io
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Ensure uploads directory exists
 UPLOAD_FOLDER = 'uploads'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
+
+# WebSocket event handlers
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected to WebSocket')
+    emit('status', {'message': 'Connected to WebSocket for real-time streaming'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected from WebSocket')
+
+@socketio.on('request_frames')
+def handle_request_frames():
+    """Send current frame buffer to client via WebSocket"""
+    global frame_buffer, processing_complete, start_signal_received
+    emit('frame_update', {
+        'frames': frame_buffer,
+        'buffer_size': len(frame_buffer),
+        'processing_complete': processing_complete,
+        'start_signal_received': start_signal_received
+    })
 
 @app.route('/')
 def index():
@@ -49,7 +72,7 @@ def save_audio():
             
             # MuseTalk server configuration
             musetalk_url = "http://localhost:8085/process"
-            stream_url = "http://localhost:5000/receive_frame"  # This Flask app's endpoint
+            stream_url = "http://localhost:5000/receive_frame"  # This Flask app's endpoint (kept for signals)
             
             print(f"DEBUG: MuseTalk URL: {musetalk_url}")
             print(f"DEBUG: Stream URL: {stream_url}")
@@ -73,6 +96,9 @@ def save_audio():
             print(f"DEBUG: MuseTalk response: {response.text}")
             
             if response.status_code == 200:
+                # Reset start signal for new processing session
+                global start_signal_received
+                start_signal_received = False
                 return jsonify({
                     'success': True,
                     'filename': filename,
@@ -138,104 +164,148 @@ def list_recordings():
 @app.route('/receive_frame', methods=['POST'])
 def receive_frame():
     """Receive frames directly from MuseTalk service"""
+    # Global declarations - all global variables must be declared at the beginning
+    global frame_buffer, processing_complete, start_signal_received
+
     try:
-        print(f"=== FRAME RECEPTION START ===")
-        print(f"DEBUG: Received frame buffer request")
-        print(f"DEBUG: Request content type: {request.content_type}")
-        
         # Check if it's JSON data (new buffer format)
         if request.content_type and 'application/json' in request.content_type:
             buffer_data = request.json
-            
+
             # Check if this is a finished signal
             if buffer_data.get('status') == 'finished':
-                print(f"DEBUG: Received finished signal from MuseTalk")
-                print(f"DEBUG: Total frames sent: {buffer_data.get('total_frames_sent', 0)}")
-                
-                # Mark processing as complete
-                global processing_complete
                 processing_complete = True
-                print(f"DEBUG: Processing marked as complete from finished signal")
-                print(f"=== FRAME RECEPTION END (FINISHED) ===")
+                
+                # Emit WebSocket event for finished signal
+                try:
+                    socketio.emit('frame_update', {
+                        'status': 'finished',
+                        'processing_complete': True,
+                        'total_frames_sent': buffer_data.get('total_frames_sent', 0),
+                        'total_frames_expected': buffer_data.get('total_frames_expected', 0),
+                        'frames_generated': buffer_data.get('frames_generated', 0),
+                        'message': buffer_data.get('message', 'Streaming completed')
+                    })
+                    print("WebSocket finished signal emitted")
+                except Exception as ws_error:
+                    print(f"WebSocket finished signal emit error: {ws_error}")
                 
                 return jsonify({
                     'success': True,
                     'status': 'finished',
                     'total_frames_sent': buffer_data.get('total_frames_sent', 0),
+                    'total_frames_expected': buffer_data.get('total_frames_expected', 0),
+                    'frames_generated': buffer_data.get('frames_generated', 0),
                     'processing_complete': True,
+                    'websocket_emitted': True,
                     'message': buffer_data.get('message', 'Streaming completed')
                 })
-            
-            # Handle regular frame buffer
-            frames = buffer_data.get('frames', [])
-            total_frames = buffer_data.get('total_frames', 0)
-            is_final = buffer_data.get('final', False)
-            
-            print(f"DEBUG: Received buffer with {len(frames)} frames")
-            print(f"DEBUG: Total frames in request: {total_frames}")
-            print(f"DEBUG: Is final: {is_final}")
-            
-            # Store frames in buffer for frontend access
-            global frame_buffer
-            frames_added = 0
-            for frame_info in frames:
-                frame_number = frame_info.get('frame_number', 0)
-                frame_data = frame_info.get('frame_data', '')
+
+            # Check if this is a start signal
+            elif buffer_data.get('status') == 'start':
+                start_signal_received = True
                 
-                if frame_data:
-                    # Add to buffer directly (keep as base64 for frontend)
-                    frame_buffer.append({
-                        'frame_number': frame_number,
-                        'frame_data': frame_data,  # Keep as base64 for frontend
-                        'timestamp': datetime.now().isoformat()
+                # Emit WebSocket event for start signal
+                try:
+                    socketio.emit('frame_update', {
+                        'status': 'start',
+                        'start_signal_received': True,
+                        'estimated_finish_time': buffer_data.get('estimated_finish_time', 0),
+                        'audio_duration': buffer_data.get('audio_duration', 0),
+                        'message': buffer_data.get('message', 'Starting frame streaming')
                     })
-                    frames_added += 1
-            
-            # Mark processing as complete if this is the final buffer
-            if is_final:
-                processing_complete = True
-                print(f"DEBUG: Processing marked as complete (final buffer)")
-            
-            print(f"DEBUG: Frames added to buffer: {frames_added}")
-            print(f"DEBUG: Buffer size after adding frames: {len(frame_buffer)}")
-            print(f"DEBUG: Processing complete status: {processing_complete}")
-            print(f"=== FRAME RECEPTION END ===")
-            
-            return jsonify({
-                'success': True,
-                'frames_received': len(frames),
-                'frames_added': frames_added,
-                'total_buffer_size': len(frame_buffer),
-                'processing_complete': processing_complete,
-                'message': f'Received {len(frames)} frames, added {frames_added} to buffer'
-            })
-        
+                    print("WebSocket start signal emitted")
+                except Exception as ws_error:
+                    print(f"WebSocket start signal emit error: {ws_error}")
+                
+                return jsonify({
+                    'success': True,
+                    'status': 'start',
+                    'estimated_finish_time': buffer_data.get('estimated_finish_time', 0),
+                    'audio_duration': buffer_data.get('audio_duration', 0),
+                    'start_signal_received': True,
+                    'websocket_emitted': True,
+                    'message': buffer_data.get('message', 'Starting frame streaming')
+                })
+
+            # Handle regular frame buffer - optimized for larger batches
+            else:
+                frames = buffer_data.get('frames', [])
+                total_frames = buffer_data.get('total_frames', 0)
+                is_final = buffer_data.get('final', False)
+                inference_complete = buffer_data.get('inference_complete', False)
+                frames_sent_so_far = buffer_data.get('frames_sent_so_far', 0)
+
+                # Add frames to buffer efficiently - optimized for speed
+                frames_added = 0
+                for frame_info in frames:
+                    frame_number = frame_info.get('frame_number', 0)
+                    frame_data = frame_info.get('frame_data', '')
+
+                    if frame_data:
+                        # Add to buffer directly (keep as base64 for frontend)
+                        frame_buffer.append({
+                            'frame_number': frame_number,
+                            'frame_data': frame_data,  # Keep as base64 for frontend
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        frames_added += 1
+
+                # Mark processing as complete if this is the final buffer or inference is complete
+                if is_final or inference_complete:
+                    processing_complete = True
+
+                # Emit WebSocket event for real-time frame updates (optimized)
+                try:
+                    socketio.emit('frame_update', {
+                        'frames': frame_buffer,
+                        'buffer_size': len(frame_buffer),
+                        'processing_complete': processing_complete,
+                        'start_signal_received': start_signal_received,
+                        'new_frames_count': frames_added,
+                        'inference_complete': inference_complete,
+                        'frames_sent_so_far': frames_sent_so_far,
+                        'batch_number': buffer_data.get('batch_number', 0)  # Add batch number for tracking
+                    })
+                    print(f"WebSocket event emitted: {frames_added} new frames, total: {len(frame_buffer)}, batch: {buffer_data.get('batch_number', 0)}")
+                except Exception as ws_error:
+                    print(f"WebSocket emit error: {ws_error}")
+
+                return jsonify({
+                    'success': True,
+                    'frames_received': len(frames),
+                    'frames_added': frames_added,
+                    'total_buffer_size': len(frame_buffer),
+                    'processing_complete': processing_complete,
+                    'inference_complete': inference_complete,
+                    'frames_sent_so_far': frames_sent_so_far,
+                    'websocket_emitted': True,
+                    'batch_number': buffer_data.get('batch_number', 0),
+                    'message': f'Received {len(frames)} frames, added {frames_added} to buffer'
+                })
+
         else:
             # Legacy single frame format (for backward compatibility)
-            print(f"DEBUG: Legacy single frame format detected")
             frame_data = request.get_data()
             frame_number = request.headers.get('Frame-Index', 0)
-            
+
             if not frame_data:
                 return jsonify({'error': 'No frame data received'}), 400
-            
+
             # Store frame in buffer for frontend access (no file saving)
             frame_buffer.append({
                 'frame_number': int(frame_number),
                 'frame_data': base64.b64encode(frame_data).decode('utf-8'),
                 'timestamp': datetime.now().isoformat()
             })
-            
+
             return jsonify({
                 'success': True,
                 'frame_number': frame_number,
                 'message': f'Frame {frame_number} added to buffer'
             })
-        
+
     except Exception as e:
-        print(f"DEBUG: Exception in receive_frame: {e}")
-        import traceback
-        print(f"DEBUG: Traceback: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
 # Global variables for frame management
@@ -243,6 +313,7 @@ frame_buffer = []
 total_frames_expected = 0
 audio_duration = 0
 processing_complete = False
+start_signal_received = False
 
 @app.route('/process_audio', methods=['POST'])
 def process_audio():
@@ -252,11 +323,12 @@ def process_audio():
         batch_size = request.json.get('batch_size', '20')
         
         # Reset frame buffer for new processing session
-        global frame_buffer, total_frames_expected, audio_duration, processing_complete
+        global frame_buffer, total_frames_expected, audio_duration, processing_complete, start_signal_received
         frame_buffer.clear()
         total_frames_expected = 0
         audio_duration = 0
         processing_complete = False
+        start_signal_received = False
         
         # Check if input.wav exists
         audio_filepath = os.path.join(UPLOAD_FOLDER, 'input.wav')
@@ -302,31 +374,68 @@ def process_audio():
 @app.route('/get_frame_buffer', methods=['GET'])
 def get_frame_buffer():
     """Get all frames in the buffer (for frontend to check occasionally)"""
-    global frame_buffer, processing_complete
-    
+    global frame_buffer, processing_complete, start_signal_received
+
     return jsonify({
         'frames': frame_buffer,
         'buffer_size': len(frame_buffer),
-        'processing_complete': processing_complete
+        'processing_complete': processing_complete,
+        'start_signal_received': start_signal_received,
+        'inference_complete': processing_complete,  # For compatibility with new format
+        'frames_sent_so_far': len(frame_buffer)  # For compatibility with new format
     })
 
 @app.route('/clear_buffer', methods=['POST'])
 def clear_buffer():
     """Clear the frame buffer"""
-    global frame_buffer, processing_complete
-    
+    global frame_buffer, processing_complete, start_signal_received
+
     print(f"=== BUFFER CLEAR ===")
     print(f"DEBUG: Clearing frame buffer")
     print(f"DEBUG: Buffer size before clearing: {len(frame_buffer)}")
-    
+
     frame_buffer.clear()
     processing_complete = False
-    
+    start_signal_received = False
+
     print(f"DEBUG: Buffer size after clearing: {len(frame_buffer)}")
     print(f"DEBUG: Processing complete reset to: {processing_complete}")
+    print(f"DEBUG: Start signal received reset to: {start_signal_received}")
     print(f"=== BUFFER CLEAR END ===")
-    
+
     return jsonify({'success': True, 'message': 'Buffer cleared'})
 
+@app.route('/mjpeg')
+def mjpeg():
+    """Proxy MJPEG stream from Muse service to avoid CORS issues in the browser."""
+    try:
+        musetalk_mjpeg_url = "http://localhost:8085/mjpeg_stream"
+        with requests.get(musetalk_mjpeg_url, stream=True) as r:
+            return app.response_class(r.iter_content(chunk_size=8192),
+                                      mimetype=r.headers.get('Content-Type', 'multipart/x-mixed-replace; boundary=frame'))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/webrtc_offer', methods=['POST'])
+def webrtc_offer():
+    """Proxy browser SDP offer to MuseTalk service and return SDP answer."""
+    try:
+        data = request.get_json(force=True)
+        musetalk_webrtc_url = "http://localhost:8085/webrtc_offer"
+        resp = requests.post(musetalk_webrtc_url, json=data, timeout=15)
+        return (resp.text, resp.status_code, resp.headers.items())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/muse_status', methods=['GET'])
+def muse_status():
+    """Proxy MuseTalk status to avoid CORS in browser."""
+    try:
+        musetalk_status_url = "http://localhost:8085/status"
+        resp = requests.get(musetalk_status_url, timeout=5)
+        return (resp.text, resp.status_code, resp.headers.items())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
