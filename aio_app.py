@@ -28,6 +28,9 @@ start_signal_received = False
 # SSE clients (queues per connection)
 sse_queues = []  # type: list
 
+# Prefer MJPEG ingest from MuseTalk over NDJSON frames to avoid duplicates
+USE_MJPEG_INGEST = True
+
 # MJPEG ingest task handle
 _mjpeg_ingest_task = None
 
@@ -185,6 +188,9 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
 
         frames = msg.get('frames', [])
         if frames:
+            # When using MJPEG ingest, ignore NDJSON frame payloads to prevent duplicates
+            if USE_MJPEG_INGEST:
+                return
             added = 0
             last_num = None
             for fr in frames:
