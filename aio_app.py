@@ -220,21 +220,64 @@ async def probe_musetalk_handler(request: web.Request) -> web.Response:
             musetalk_base_url = 'http://' + musetalk_base_url
 
         url = musetalk_base_url + '/health'
-        timeout = aiohttp.ClientTimeout(total=5)
-        async with ClientSession(timeout=timeout) as session:
-            async with session.get(url) as resp:
-                ct = resp.headers.get('Content-Type', '')
-                try:
-                    body = await resp.json()
-                except Exception:
-                    body = await resp.text()
+
+        # Diagnostics: resolve host and attempt a quick TCP connect
+        import socket
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+        resolved_ips = []
+        try:
+            infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+            for family, _, _, _, sockaddr in infos:
+                ip = sockaddr[0]
+                if ip not in resolved_ips:
+                    resolved_ips.append(ip)
+        except Exception as e:
+            logger.warning(f'DNS resolution failed for {host}: {e}')
+
+        tcp_ok = False
+        tcp_error = None
+        try:
+            # Prefer IPv4 for simplicity
+            with socket.create_connection((host, port), timeout=2) as s:
+                tcp_ok = True
+        except Exception as e:
+            tcp_error = str(e)
+
+        # Attempt HTTP GET with tighter connect/read timeouts and IPv4 preference
+        timeout = aiohttp.ClientTimeout(total=5, connect=2, sock_connect=2, sock_read=3)
+        connector = aiohttp.TCPConnector(ssl=False, family=socket.AF_INET, force_close=True)
+        async with ClientSession(timeout=timeout, connector=connector) as session:
+            try:
+                async with session.get(url, headers={'User-Agent': 'AvatarPageProbe/1.0'}) as resp:
+                    ct = resp.headers.get('Content-Type', '')
+                    try:
+                        body = await resp.json()
+                    except Exception:
+                        body = await resp.text()
+                    return web.json_response({
+                        'success': resp.status == 200,
+                        'status': resp.status,
+                        'url': url,
+                        'resolved_ips': resolved_ips,
+                        'tcp_connect_ok': tcp_ok,
+                        'tcp_error': tcp_error,
+                        'content_type': ct,
+                        'body': body,
+                    }, status=200 if resp.status == 200 else 502)
+            except Exception as e:
+                logger.exception('HTTP probe to MuseTalk failed')
                 return web.json_response({
-                    'success': resp.status == 200,
-                    'status': resp.status,
+                    'success': False,
+                    'status': None,
                     'url': url,
-                    'content_type': ct,
-                    'body': body,
-                }, status=200 if resp.status == 200 else 502)
+                    'resolved_ips': resolved_ips,
+                    'tcp_connect_ok': tcp_ok,
+                    'tcp_error': tcp_error,
+                    'error': str(e),
+                }, status=504)
     except Exception as e:
         logger.exception('probe_musetalk error')
         return web.json_response({'success': False, 'error': str(e)}, status=500)
