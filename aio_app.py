@@ -325,7 +325,7 @@ async def get_frame_buffer_handler(request: web.Request) -> web.Response:
             'start_signal_received': start_signal_received,
         })
     except Exception as e:
-        logger.exception('get_frame_buffer error')
+        # Suppress GET logging to reduce console noise
         return web.json_response({'error': str(e)}, status=500)
 
 
@@ -342,13 +342,11 @@ async def mjpeg_stream_handler(request: web.Request) -> web.StreamResponse:
 
     transport = request.transport
     if transport is None or transport.is_closing():
-        logger.info('MJPEG: client transport closing before prepare')
         return response
 
     try:
         await response.prepare(request)
-    except (ConnectionResetError, asyncio.CancelledError) as e:
-        logger.info(f'MJPEG: client disconnected during prepare: {e}')
+    except (ConnectionResetError, asyncio.CancelledError):
         return response
 
     read_index = 0
@@ -372,14 +370,11 @@ async def mjpeg_stream_handler(request: web.Request) -> web.StreamResponse:
                     await response.write(frame_bytes)
                     await response.write(b'\r\n')
                     if not first_written:
-                        logger.info('MJPEG: first frame written to client')
                         first_written = True
-                except (ConnectionResetError, asyncio.CancelledError, RuntimeError) as e:
-                    logger.info(f'MJPEG: client disconnected during write: {e}')
+                except (ConnectionResetError, asyncio.CancelledError, RuntimeError):
                     break
             else:
                 if processing_complete and read_index >= len(frame_buffer):
-                    logger.info('MJPEG: finished and all buffered frames flushed')
                     break
                 await asyncio.sleep(0.01)
     finally:
