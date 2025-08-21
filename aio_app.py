@@ -144,6 +144,7 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
         status = msg.get('status')
         if status == 'start':
             start_signal_received = True
+            print('Start signal received from MuseTalk')
             return
         if status == 'finished':
             processing_complete = True

@@ -858,6 +858,7 @@
                     const prevStart = startSignalReceived;
                     startSignalReceived = Boolean(data.start_signal_received);
                     if (startSignalReceived && !prevStart && !playbackStartedBySignal) {
+                        console.log('[Signal] start received');
                         playbackStartedBySignal = true;
                         // Ensure playback loop is running; it'll start drawing now
                         try { updateStreamStatus('streaming', 'Start signal received — playing buffered frames'); } catch {}
