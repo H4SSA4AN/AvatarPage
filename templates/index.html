@@ -866,6 +866,8 @@
                         try { updateStreamStatus('streaming', 'Start signal received — playing buffered frames'); } catch {}
                         // Kick off predecode of initial frames for smooth start
                         try { predecodeFrames(0, PREDECODE_AHEAD); } catch {}
+                        // Force draw first available frame immediately to prove rendering path
+                        try { drawFirstAvailableFrameOnce(); } catch {}
                     }
                     // Reflect server-side buffer size to avoid drift with client-side buffer
                     frameCount.textContent = String(data.buffer_size ?? frameBuffer.length);
@@ -1001,6 +1003,42 @@
                 bufferPlaybackRaf = requestAnimationFrame(drawNext);
             };
             bufferPlaybackRaf = requestAnimationFrame(drawNext);
+        }
+
+        // Force draw the earliest decodable frame once when start arrives
+        function drawFirstAvailableFrameOnce() {
+            const canvas = streamVideo;
+            const ctx = canvas.getContext('2d');
+            for (let i = 0; i < frameBuffer.length; i++) {
+                const entry = frameBuffer[i];
+                const bmp = entry._bmp;
+                const img = entry._img;
+                if (bmp) {
+                    const scale = Math.max(canvas.width / bmp.width, canvas.height / bmp.height);
+                    const w = bmp.width * scale, h = bmp.height * scale;
+                    const x = (canvas.width - w) / 2, y = (canvas.height - h) / 2;
+                    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(bmp, x, y, w, h);
+                    canvas.classList.add('active');
+                    currentFrame.textContent = String(entry.frame_number ?? i);
+                    firstFrameDrawn = true;
+                    currentFrameIndex = i + 1;
+                    return true;
+                }
+                if (img && img.complete && img.naturalWidth > 0) {
+                    const scale = Math.max(canvas.width / img.naturalWidth, canvas.height / img.naturalHeight);
+                    const w = img.naturalWidth * scale, h = img.naturalHeight * scale;
+                    const x = (canvas.width - w) / 2, y = (canvas.height - h) / 2;
+                    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, x, y, w, h);
+                    canvas.classList.add('active');
+                    currentFrame.textContent = String(entry.frame_number ?? i);
+                    firstFrameDrawn = true;
+                    currentFrameIndex = i + 1;
+                    return true;
+                }
+            }
+            return false;
         }
         
         // Initialize canvas on page load
