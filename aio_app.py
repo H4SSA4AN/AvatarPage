@@ -21,11 +21,14 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 MAX_AUDIO_SIZE = 100 * 1024 * 1024  # 100MB
 
 # State
-frame_buffer = []
+frame_buffer = []  # entries hold raw bytes to minimize overhead: {'frame_number': int, 'frame_bytes': bytes, 'timestamp': str}
 processing_complete = False
 start_signal_received = False
 initial_flush_pending = False
 initial_buffer_received = False
+
+# Buffer limits to avoid unbounded growth
+MAX_BUFFER_FRAMES = 3000
 
 # SSE clients (queues per connection)
 sse_queues = []  # type: list
@@ -198,11 +201,18 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
                 if not b64:
                     continue
                 last_num = fr.get('frame_number', 0)
+                try:
+                    frame_bytes = base64.b64decode(b64)
+                except Exception:
+                    continue
                 frame_buffer.append({
                     'frame_number': last_num,
-                    'frame_data': b64,
+                    'frame_bytes': frame_bytes,
                     'timestamp': datetime.now().isoformat(),
                 })
+                # Enforce max buffer size (drop oldest)
+                if len(frame_buffer) > MAX_BUFFER_FRAMES:
+                    del frame_buffer[: len(frame_buffer) - MAX_BUFFER_FRAMES]
                 added += 1
             total_frames_received += added
             # If we were expecting the initial flush, mark it received now
@@ -357,7 +367,18 @@ async def get_frame_buffer_handler(request: web.Request) -> web.Response:
                 next_index = start
             else:
                 end = min(len(frame_buffer), start + limit)
-                frames_slice = frame_buffer[start:end]
+                # Build JSON-friendly slice with base64 on-the-fly
+                frames_slice = []
+                for e in frame_buffer[start:end]:
+                    if 'frame_bytes' in e:
+                        b64 = base64.b64encode(e['frame_bytes']).decode('utf-8')
+                    else:
+                        b64 = e.get('frame_data', '')
+                    frames_slice.append({
+                        'frame_number': e.get('frame_number', 0),
+                        'frame_data': b64,
+                        'timestamp': e.get('timestamp'),
+                    })
                 next_index = end
         else:
             try:
@@ -370,7 +391,17 @@ async def get_frame_buffer_handler(request: web.Request) -> web.Response:
                 frames_slice = []
                 next_index = 0
             else:
-                frames_slice = frame_buffer[:limit]
+                frames_slice = []
+                for e in frame_buffer[:limit]:
+                    if 'frame_bytes' in e:
+                        b64 = base64.b64encode(e['frame_bytes']).decode('utf-8')
+                    else:
+                        b64 = e.get('frame_data', '')
+                    frames_slice.append({
+                        'frame_number': e.get('frame_number', 0),
+                        'frame_data': b64,
+                        'timestamp': e.get('timestamp'),
+                    })
                 next_index = min(len(frame_buffer), limit)
         return web.json_response({
             'frames': frames_slice,
@@ -509,17 +540,18 @@ async def _mjpeg_ingest_worker(ingest_url: str):
                         continue
                     try:
                         body = await reader.readexactly(content_length)
-                        # Some senders add trailing CRLF after body; read and ignore up to 2 bytes
-                        _ = await reader.readany()
+                        # Consume the trailing CRLF line after the body
+                        _ = await reader.readline()
                     except Exception:
                         break
                     try:
-                        b64 = base64.b64encode(body).decode('utf-8')
                         frame_buffer.append({
                             'frame_number': next_frame_number,
-                            'frame_data': b64,
+                            'frame_bytes': body,
                             'timestamp': datetime.now().isoformat(),
                         })
+                        if len(frame_buffer) > MAX_BUFFER_FRAMES:
+                            del frame_buffer[: len(frame_buffer) - MAX_BUFFER_FRAMES]
                         if next_frame_number == 0:
                             print('MJPEG ingest: first frame appended, buffer_size=1')
                         elif next_frame_number % 30 == 0:
