@@ -167,14 +167,9 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
 
         status = msg.get('status')
         if status == 'start':
+            # Still accept start as informational, but do not gate playback on it
             start_signal_received = True
             print('Start signal received from MuseTalk')
-            try:
-                sse_broadcast_sync('start', {
-                    'timestamp': datetime.now().isoformat()
-                })
-            except Exception:
-                pass
             return
         if status == 'finished':
             processing_complete = True

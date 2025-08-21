@@ -392,8 +392,9 @@
         const fileSize = document.getElementById('fileSize');
         const connectButton = document.getElementById('connectButton');
         const connectStatus = document.getElementById('connectStatus');
-        let startSignalReceived = false;
-        let playbackStartedBySignal = false;
+        // Start gating removed: play as soon as frames exist
+        let startSignalReceived = true;
+        let playbackStartedBySignal = true;
         let firstFrameDrawn = false;
         let mjpegDrawRaf = null;
         let mjpegReady = false;
@@ -465,9 +466,9 @@
                         frameCount.textContent = '0';
                         currentFrame.textContent = '-';
                         playbackFPS.textContent = '-';
-                        // Reset start signal only when starting a new recording
-                        startSignalReceived = false;
-                        playbackStartedBySignal = false;
+                        // No start gating; playback runs when frames are available
+                        startSignalReceived = true;
+                        playbackStartedBySignal = true;
                         firstFrameDrawn = false;
                     } catch (e) { /* ignore */ }
                     startTimer();
@@ -856,29 +857,11 @@
                     } catch {}
                     nextFetchIndex = data.next_index || nextFetchIndex;
                     processingCompleteFlag = Boolean(data.processing_complete);
-                    const prevStart = startSignalReceived;
-                    // Latch start: only ever set true from server; never set false here
-                    if (data.start_signal_received) startSignalReceived = true;
-                    
-                    // DEBUG: Log when start signal changes
-                    if (startSignalReceived !== prevStart) {
-                        console.log('[DEBUG] startSignalReceived changed:', prevStart, '->', startSignalReceived);
-                        console.log('[DEBUG] frameBuffer.length:', frameBuffer.length);
-                        console.log('[DEBUG] data.start_signal_received:', data.start_signal_received);
-                    }
-                    
-                    if (startSignalReceived && !prevStart && !playbackStartedBySignal) {
-                        console.log('[Signal] start received');
-                        playbackStartedBySignal = true;
-                        // Ensure playback loop is running; it'll start drawing now
-                        try { startBufferPlaybackLoop(); } catch {}
-                        try { playButton.disabled = false; pauseButton.disabled = false; } catch {}
-                        try { updateStreamStatus('streaming', 'Start signal received — playing buffered frames'); } catch {}
-                        // Kick off predecode of initial frames for smooth start
-                        try { predecodeFrames(0, PREDECODE_AHEAD); } catch {}
-                        // Force draw first available frame immediately to prove rendering path
-                        try { drawFirstAvailableFrameOnce(); } catch {}
-                    }
+                    // Start gating removed: ensure playback loop is running and draw first frame ASAP
+                    try { startBufferPlaybackLoop(); } catch {}
+                    try { playButton.disabled = false; pauseButton.disabled = false; } catch {}
+                    try { updateStreamStatus('streaming', 'Playing buffered frames'); } catch {}
+                    try { if (!firstFrameDrawn) drawFirstAvailableFrameOnce(); } catch {}
                     // Reflect server-side buffer size to avoid drift with client-side buffer
                     frameCount.textContent = String(data.buffer_size ?? frameBuffer.length);
                 } catch (e) {
@@ -1109,18 +1092,7 @@
             // Subscribe to server-sent events for start/finished signals
             try {
                 const evtSrc = new EventSource('/events');
-                evtSrc.addEventListener('start', (ev) => {
-                    console.log('[SSE] start event', ev.data);
-                    const prevStart = startSignalReceived;
-                    startSignalReceived = true;
-                    if (!prevStart && !playbackStartedBySignal) {
-                        playbackStartedBySignal = true;
-                        try { startBufferPlaybackLoop(); } catch {}
-                        try { playButton.disabled = false; pauseButton.disabled = false; } catch {}
-                        try { updateStreamStatus('streaming', 'Start signal received — playing buffered frames'); } catch {}
-                        try { drawFirstAvailableFrameOnce(); } catch {}
-                    }
-                });
+                // Keep finished as optional informational event
                 evtSrc.addEventListener('finished', (ev) => {
                     console.log('[SSE] finished event', ev.data);
                     processingCompleteFlag = true;
