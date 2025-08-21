@@ -189,6 +189,11 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
                 })
                 if len(frame_buffer) > MAX_BUFFER_FRAMES:
                     del frame_buffer[: len(frame_buffer) - MAX_BUFFER_FRAMES]
+                # Per-frame log
+                try:
+                    print(f"Frame received (JSON POST) #{last_num} | buffer_size={len(frame_buffer)}")
+                except Exception:
+                    pass
                 added += 1
             if initial_flush_pending:
                 initial_flush_pending = False
@@ -608,8 +613,8 @@ async def _mjpeg_ingest_worker(ingest_url: str):
                             initial_buffer_received = True
                             initial_flush_pending = False
                             print('MJPEG ingest: first frame appended, buffer_size=1 (initial buffer ready)')
-                        elif next_frame_number % 30 == 0:
-                            print(f"MJPEG ingest: buffer_size={len(frame_buffer)} (last #{next_frame_number})")
+                        # Per-frame log
+                        print(f"Frame received (MJPEG) #{next_frame_number} | buffer_size={len(frame_buffer)}")
                         next_frame_number += 1
                     except Exception:
                         pass
