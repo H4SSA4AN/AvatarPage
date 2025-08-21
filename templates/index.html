@@ -857,10 +857,11 @@
                     } catch {}
                     nextFetchIndex = data.next_index || nextFetchIndex;
                     processingCompleteFlag = Boolean(data.processing_complete);
+                    const haveInitialBuffer = Boolean(data.initial_buffer_received);
                     // Ensure playback loop is running
                     try { startBufferPlaybackLoop(); } catch {}
-                    // Only mark streaming and enable controls once we have frames
-                    if (frameBuffer.length > 0) {
+                    // Only mark streaming and enable controls once the initial flush arrived and we have frames
+                    if (haveInitialBuffer && frameBuffer.length > 0) {
                         try { playButton.disabled = false; pauseButton.disabled = false; } catch {}
                         try { updateStreamStatus('streaming', 'Playing buffered frames'); } catch {}
                         try { if (!firstFrameDrawn) drawFirstAvailableFrameOnce(); } catch {}

@@ -24,12 +24,14 @@ MAX_AUDIO_SIZE = 100 * 1024 * 1024  # 100MB
 frame_buffer = []
 processing_complete = False
 start_signal_received = False
+initial_flush_pending = False
+initial_buffer_received = False
 
 # SSE clients (queues per connection)
 sse_queues = []  # type: list
 
-# Prefer MJPEG ingest from MuseTalk over NDJSON frames to avoid duplicates
-USE_MJPEG_INGEST = True
+# Prefer NDJSON; set to True only if explicitly using MJPEG upstream ingest
+USE_MJPEG_INGEST = False
 
 # MJPEG ingest task handle
 _mjpeg_ingest_task = None
@@ -116,13 +118,14 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         async with ClientSession(timeout=timeout) as session:
             async with session.post(musetalk_url, data=form) as resp:
                 text = await resp.text()
-                # Start MJPEG ingest from MuseTalk to use MJPEG for transmission upstream
-                try:
-                    base = musetalk_base_url
-                    ingest_url = base + '/mjpeg_stream'
-                    _start_mjpeg_ingest(ingest_url)
-                except Exception:
-                    pass
+                # Optionally start MJPEG ingest (disabled by default)
+                if USE_MJPEG_INGEST:
+                    try:
+                        base = musetalk_base_url
+                        ingest_url = base + '/mjpeg_stream'
+                        _start_mjpeg_ingest(ingest_url)
+                    except Exception:
+                        pass
                 return web.json_response({
                     'success': resp.status == 200,
                     'message': 'Audio forwarded to MuseTalk',
@@ -138,7 +141,7 @@ async def save_audio_handler(request: web.Request) -> web.Response:
 
 async def stream_frames_handler(request: web.Request) -> web.Response:
     """Persistent NDJSON (one JSON object per line) receiver from MuseTalk."""
-    global frame_buffer, processing_complete, start_signal_received
+    global frame_buffer, processing_complete, start_signal_received, initial_flush_pending, initial_buffer_received
     # Silent start
 
     buf = b''
@@ -167,9 +170,11 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
 
         status = msg.get('status')
         if status == 'start':
-            # Still accept start as informational, but do not gate playback on it
+            # Mark that a pre-start initial buffer should follow next
             start_signal_received = True
-            print('Start signal received from MuseTalk')
+            initial_flush_pending = True
+            initial_buffer_received = False
+            print('Start signal received from MuseTalk (awaiting initial buffer flush)')
             return
         if status == 'finished':
             processing_complete = True
@@ -200,6 +205,11 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
                 })
                 added += 1
             total_frames_received += added
+            # If we were expecting the initial flush, mark it received now
+            if initial_flush_pending:
+                initial_flush_pending = False
+                initial_buffer_received = True
+                print(f"Initial buffer received: +{added} frames | buffer_size={len(frame_buffer)}")
             # Only logging kept: frames received summary
             print(f"Frames received: +{added} (last #{last_num}) | buffer_size={len(frame_buffer)} | total={total_frames_received}")
 
@@ -230,10 +240,12 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
 
 
 async def clear_buffer_handler(request: web.Request) -> web.Response:
-    global frame_buffer, processing_complete, start_signal_received
+    global frame_buffer, processing_complete, start_signal_received, initial_flush_pending, initial_buffer_received
     frame_buffer.clear()
     processing_complete = False
     start_signal_received = False
+    initial_flush_pending = False
+    initial_buffer_received = False
     return web.json_response({'success': True})
 
 
@@ -366,6 +378,7 @@ async def get_frame_buffer_handler(request: web.Request) -> web.Response:
             'next_index': next_index,
             'processing_complete': processing_complete,
             'start_signal_received': start_signal_received,
+            'initial_buffer_received': initial_buffer_received,
         })
     except Exception as e:
         # Suppress GET logging to reduce console noise
