@@ -614,9 +614,8 @@
                         
                         updateStreamStatus('waiting', 'Waiting for MJPEG stream to start...');
                         
-                        // Start MJPEG streaming and begin buffering loop (no immediate drawing)
+                        // Start MJPEG stream (optional keepalive), buffering handled via /get_frame_buffer polling
                         startMjpegStream();
-                        startMjpegBufferingLoop();
                     } else {
                         showStatus('Error processing recording: ' + result.error, 'error');
                         updateStreamStatus('error', 'Processing failed');
@@ -856,7 +855,8 @@
                     nextFetchIndex = data.next_index || nextFetchIndex;
                     processingCompleteFlag = Boolean(data.processing_complete);
                     startSignalReceived = Boolean(data.start_signal_received);
-                    frameCount.textContent = String(frameBuffer.length);
+                    // Reflect server-side buffer size to avoid drift with client-side buffer
+                    frameCount.textContent = String(data.buffer_size ?? frameBuffer.length);
                 } catch (e) {
                     console.warn('Buffer poll error', e);
                 } finally {
