@@ -301,22 +301,30 @@ async def get_frame_buffer_handler(request: web.Request) -> web.Response:
                 start = 0
             try:
                 limit = int(limit_q) if limit_q is not None else 200
-                if limit <= 0:
+                if limit < 0:
                     limit = 200
             except Exception:
                 limit = 200
-            end = min(len(frame_buffer), start + limit)
-            frames_slice = frame_buffer[start:end]
-            next_index = end
+            if limit == 0:
+                frames_slice = []
+                next_index = start
+            else:
+                end = min(len(frame_buffer), start + limit)
+                frames_slice = frame_buffer[start:end]
+                next_index = end
         else:
             try:
                 limit = int(limit_q) if limit_q is not None else 200
-                if limit <= 0:
+                if limit < 0:
                     limit = 200
             except Exception:
                 limit = 200
-            frames_slice = frame_buffer[:limit]
-            next_index = min(len(frame_buffer), limit)
+            if limit == 0:
+                frames_slice = []
+                next_index = 0
+            else:
+                frames_slice = frame_buffer[:limit]
+                next_index = min(len(frame_buffer), limit)
         return web.json_response({
             'frames': frames_slice,
             'buffer_size': len(frame_buffer),

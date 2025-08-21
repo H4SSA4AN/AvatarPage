@@ -614,8 +614,9 @@
                         
                         updateStreamStatus('waiting', 'Waiting for MJPEG stream to start...');
                         
-                        // Start MJPEG streaming
+                        // Start MJPEG streaming and begin buffering loop (no immediate drawing)
                         startMjpegStream();
+                        startMjpegBufferingLoop();
                     } else {
                         showStatus('Error processing recording: ' + result.error, 'error');
                         updateStreamStatus('error', 'Processing failed');
@@ -737,6 +738,15 @@
             }
         }
 
+        // Utilities
+        function base64JpegToBlob(b64) {
+            const byteStr = atob(b64);
+            const len = byteStr.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) bytes[i] = byteStr.charCodeAt(i);
+            return new Blob([bytes], { type: 'image/jpeg' });
+        }
+
         // MJPEG streaming functions
         function startMjpegStream() {
             if (mjpegStream) {
@@ -771,55 +781,31 @@
             updateStreamStatus('streaming', 'MJPEG stream started - buffering frames...');
             console.log('MJPEG stream started');
             firstFrameDrawn = false;
-            // Do NOT start MJPEG render loop; buffered playback will handle drawing
+            // MJPEG render loop will draw frames onto canvas; we also continue buffer polling which can be used for playback
         }
 
-        function startMjpegRenderLoop() {
+        // Buffer MJPEG frames without drawing them; draw is handled by buffered playback loop
+        function startMjpegBufferingLoop() {
             if (mjpegDrawRaf) {
                 cancelAnimationFrame(mjpegDrawRaf);
             }
-            const canvas = streamVideo;
-            const ctx = canvas.getContext('2d');
-            function draw() {
+            function buffer() {
                 if (mjpegImage && mjpegImage.naturalWidth > 0 && mjpegImage.naturalHeight > 0) {
                     const img = mjpegImage;
-                    // Calculate scaling to fill entire canvas (cover)
-                    const scale = Math.max(
-                        canvas.width / img.naturalWidth,
-                        canvas.height / img.naturalHeight
-                    );
-                    const scaledWidth = img.naturalWidth * scale;
-                    const scaledHeight = img.naturalHeight * scale;
-                    const x = (canvas.width - scaledWidth) / 2;
-                    const y = (canvas.height - scaledHeight) / 2;
-                    ctx.fillStyle = '#000000';
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
-                    ctx.drawImage(img, x, y, scaledWidth, scaledHeight);
-                    canvas.classList.add('active');
-                    updateStreamStatus('streaming', 'MJPEG stream active');
-                    
-                    if (!firstFrameDrawn) {
-                        console.log('[MJPEG] first frame drawn at', new Date().toISOString());
-                        try {
-                            if (audioPlayer && audioPlayer.src) {
-                                audioPlayer.currentTime = 0;
-                                const playPromise = audioPlayer.play();
-                                if (playPromise && typeof playPromise.then === 'function') {
-                                    playPromise.catch(err => console.warn('Audio autoplay blocked:', err));
-                                }
-                            }
-                        } catch (e) {
-                            console.warn('Audio start error:', e);
-                        }
-                        firstFrameDrawn = true;
-                    }
-                } else {
-                    // Log readiness state occasionally
-                    // console.log('[MJPEG] waiting for image decode...')
+                    try {
+                        const off = document.createElement('canvas');
+                        off.width = img.naturalWidth; off.height = img.naturalHeight;
+                        const offCtx = off.getContext('2d');
+                        offCtx.drawImage(img, 0, 0);
+                        const dataUrl = off.toDataURL('image/jpeg');
+                        const b64 = dataUrl.split(',')[1];
+                        frameBuffer.push({ frame_number: frameBuffer.length, frame_data: b64 });
+                        frameCount.textContent = String(frameBuffer.length);
+                    } catch {}
                 }
-                mjpegDrawRaf = requestAnimationFrame(draw);
+                mjpegDrawRaf = requestAnimationFrame(buffer);
             }
-            mjpegDrawRaf = requestAnimationFrame(draw);
+            mjpegDrawRaf = requestAnimationFrame(buffer);
         }
 
         // Buffered frame playback (draw every frame from server buffer)
