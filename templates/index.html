@@ -857,11 +857,14 @@
                     } catch {}
                     nextFetchIndex = data.next_index || nextFetchIndex;
                     processingCompleteFlag = Boolean(data.processing_complete);
-                    // Start gating removed: ensure playback loop is running and draw first frame ASAP
+                    // Ensure playback loop is running
                     try { startBufferPlaybackLoop(); } catch {}
-                    try { playButton.disabled = false; pauseButton.disabled = false; } catch {}
-                    try { updateStreamStatus('streaming', 'Playing buffered frames'); } catch {}
-                    try { if (!firstFrameDrawn) drawFirstAvailableFrameOnce(); } catch {}
+                    // Only mark streaming and enable controls once we have frames
+                    if (frameBuffer.length > 0) {
+                        try { playButton.disabled = false; pauseButton.disabled = false; } catch {}
+                        try { updateStreamStatus('streaming', 'Playing buffered frames'); } catch {}
+                        try { if (!firstFrameDrawn) drawFirstAvailableFrameOnce(); } catch {}
+                    }
                     // Reflect server-side buffer size to avoid drift with client-side buffer
                     frameCount.textContent = String(data.buffer_size ?? frameBuffer.length);
                 } catch (e) {

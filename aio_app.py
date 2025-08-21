@@ -496,6 +496,10 @@ async def _mjpeg_ingest_worker(ingest_url: str):
                                 'frame_data': b64,
                                 'timestamp': datetime.now().isoformat(),
                             })
+                            if next_frame_number == 0:
+                                print('MJPEG ingest: first frame appended, buffer_size=1')
+                            elif next_frame_number % 30 == 0:
+                                print(f"MJPEG ingest: buffer_size={len(frame_buffer)} (last #{next_frame_number})")
                             next_frame_number += 1
                         except Exception:
                             continue
