@@ -293,16 +293,30 @@ async def get_frame_buffer_handler(request: web.Request) -> web.Response:
     """Return frames; supports incremental fetch via ?from_index=N"""
     try:
         from_index_q = request.rel_url.query.get('from_index')
+        limit_q = request.rel_url.query.get('limit')
         if from_index_q is not None:
             try:
                 start = max(0, int(from_index_q))
             except ValueError:
                 start = 0
-            frames_slice = frame_buffer[start:]
-            next_index = len(frame_buffer)
+            try:
+                limit = int(limit_q) if limit_q is not None else 200
+                if limit <= 0:
+                    limit = 200
+            except Exception:
+                limit = 200
+            end = min(len(frame_buffer), start + limit)
+            frames_slice = frame_buffer[start:end]
+            next_index = end
         else:
-            frames_slice = frame_buffer
-            next_index = len(frame_buffer)
+            try:
+                limit = int(limit_q) if limit_q is not None else 200
+                if limit <= 0:
+                    limit = 200
+            except Exception:
+                limit = 200
+            frames_slice = frame_buffer[:limit]
+            next_index = min(len(frame_buffer), limit)
         return web.json_response({
             'frames': frames_slice,
             'buffer_size': len(frame_buffer),

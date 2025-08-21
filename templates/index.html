@@ -403,6 +403,7 @@
         let bufferPolling = false;
         let nextFetchIndex = 0;
         let processingCompleteFlag = false;
+        const DECODE_CONCURRENCY = 4;
 
         recordButton.addEventListener('click', toggleRecording);
         playButton.addEventListener('click', startPlayback);
@@ -832,16 +833,40 @@
             const poll = async () => {
                 if (!bufferPolling) return;
                 try {
-                    const res = await fetch(`/get_frame_buffer?from_index=${nextFetchIndex}`);
+                    // Request frames in chunks to reduce payload size and latency
+                    const res = await fetch(`/get_frame_buffer?from_index=${nextFetchIndex}&limit=200`);
                     const data = await res.json();
                     const newFrames = data.frames || [];
-                    // Pre-decode images for smoother playback
-                    for (const f of newFrames) {
-                        const img = new Image();
-                        img.src = `data:image/jpeg;base64,${f.frame_data}`;
-                        f._img = img;
-                        frameBuffer.push(f);
-                    }
+                    // Push into buffer
+                    for (const f of newFrames) frameBuffer.push(f);
+                    // Opportunistic parallel decode using createImageBitmap when available
+                    try {
+                        if ('createImageBitmap' in window) {
+                            const maxToDecode = Math.min(newFrames.length, 50);
+                            const tasks = [];
+                            let active = 0;
+                            const toDecode = newFrames.slice(0, maxToDecode);
+                            const schedule = () => {
+                                if (!toDecode.length || active >= DECODE_CONCURRENCY) return;
+                                const fr = toDecode.shift();
+                                active += 1;
+                                const blob = base64JpegToBlob(fr.frame_data);
+                                createImageBitmap(blob)
+                                    .then(bmp => { fr._bmp = bmp; })
+                                    .catch(() => {})
+                                    .finally(() => { active -= 1; schedule(); });
+                                schedule();
+                            };
+                            schedule();
+                        } else {
+                            // Fallback to HTMLImageElement decode
+                            for (const f of newFrames) {
+                                const img = new Image();
+                                img.src = `data:image/jpeg;base64,${f.frame_data}`;
+                                f._img = img;
+                            }
+                        }
+                    } catch {}
                     nextFetchIndex = data.next_index || nextFetchIndex;
                     processingCompleteFlag = Boolean(data.processing_complete);
                     startSignalReceived = Boolean(data.start_signal_received);
@@ -850,7 +875,7 @@
                     console.warn('Buffer poll error', e);
                 } finally {
                     // Fast poll while playing; slow down after complete
-                    const delay = processingCompleteFlag ? 250 : 50;
+                    const delay = processingCompleteFlag ? 150 : 30;
                     if (bufferPolling) setTimeout(poll, delay);
                 }
             };
@@ -879,8 +904,35 @@
                         // Waiting for start signal; do not render yet
                     } else if (currentFrameIndex < frameBuffer.length) {
                         const entry = frameBuffer[currentFrameIndex];
+                        const bmp = entry._bmp;
                         const img = entry._img;
-                        if (img && img.naturalWidth > 0) {
+                        if (bmp) {
+                            const scale = Math.max(
+                                canvas.width / bmp.width,
+                                canvas.height / bmp.height
+                            );
+                            const w = bmp.width * scale;
+                            const h = bmp.height * scale;
+                            const x = (canvas.width - w) / 2;
+                            const y = (canvas.height - h) / 2;
+                            ctx.fillStyle = '#000';
+                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+                            ctx.drawImage(bmp, x, y, w, h);
+                            canvas.classList.add('active');
+                            currentFrame.textContent = String(entry.frame_number ?? currentFrameIndex);
+                            playbackFPS.textContent = String(targetFPS);
+                            if (!firstFrameDrawn) {
+                                try {
+                                    if (audioPlayer && audioPlayer.src) {
+                                        audioPlayer.currentTime = 0;
+                                        const p = audioPlayer.play();
+                                        if (p && typeof p.then === 'function') p.catch(() => {});
+                                    }
+                                } catch {}
+                                firstFrameDrawn = true;
+                            }
+                            currentFrameIndex += 1;
+                        } else if (img && img.naturalWidth > 0) {
                             const scale = Math.max(
                                 canvas.width / img.naturalWidth,
                                 canvas.height / img.naturalHeight
