@@ -30,8 +30,8 @@ initial_buffer_received = False
 # SSE clients (queues per connection)
 sse_queues = []  # type: list
 
-# Prefer NDJSON; set to True only if explicitly using MJPEG upstream ingest
-USE_MJPEG_INGEST = False
+# Use MJPEG upstream ingest for fastest transmission from MuseTalk to aio_app
+USE_MJPEG_INGEST = True
 
 # MJPEG ingest task handle
 _mjpeg_ingest_task = None
@@ -459,6 +459,7 @@ async def _mjpeg_ingest_worker(ingest_url: str):
     try:
         async with ClientSession(timeout=timeout) as session:
             async with session.get(ingest_url) as resp:
+                reader = resp.content
                 ctype = resp.headers.get('Content-Type', '')
                 boundary_token = 'frame'
                 if 'boundary=' in ctype:
@@ -466,58 +467,58 @@ async def _mjpeg_ingest_worker(ingest_url: str):
                         boundary_token = ctype.split('boundary=')[1].strip()
                     except Exception:
                         boundary_token = 'frame'
-                boundary = ('--' + boundary_token).encode('utf-8')
-                buf = b''
-                next_frame_number = 0
+                boundary_line = ('--' + boundary_token).encode('utf-8')
 
-                async for chunk in resp.content.iter_chunked(65536):
-                    if not chunk:
+                async def read_line() -> bytes:
+                    return await reader.readline()
+
+                next_frame_number = 0
+                # Read stream: boundary -> headers -> blank line -> body
+                while True:
+                    line = await read_line()
+                    if not line:
+                        break
+                    if boundary_line not in line:
                         continue
-                    buf += chunk
+                    # Parse headers
+                    content_length = None
+                    # Default content type not strictly needed
                     while True:
-                        start = buf.find(boundary)
-                        if start == -1:
-                            # keep buffer from growing without bound
-                            if len(buf) > 2_000_000:
-                                buf = buf[-1_000_000:]
+                        hdr = await read_line()
+                        if not hdr:
                             break
-                        # Find next boundary to get a full part
-                        next_pos = buf.find(boundary, start + len(boundary))
-                        if next_pos == -1:
-                            # need more data
-                            # trim leading noise before start
-                            if start > 0:
-                                buf = buf[start:]
+                        if hdr in (b'\r\n', b'\n'):
                             break
-                        part = buf[start + len(boundary):next_pos]
-                        buf = buf[next_pos:]
-                        # part begins with CRLF, headers, CRLFCRLF, then JPEG
                         try:
-                            if part.startswith(b"\r\n"):
-                                part = part[2:]
-                            head_end = part.find(b"\r\n\r\n")
-                            if head_end == -1:
-                                continue
-                            body = part[head_end + 4:]
-                            # Strip possible trailing CRLF
-                            if body.endswith(b"\r\n"):
-                                body = body[:-2]
-                            # Append to buffer
-                            b64 = base64.b64encode(body).decode('utf-8')
-                            frame_buffer.append({
-                                'frame_number': next_frame_number,
-                                'frame_data': b64,
-                                'timestamp': datetime.now().isoformat(),
-                            })
-                            if next_frame_number == 0:
-                                print('MJPEG ingest: first frame appended, buffer_size=1')
-                            elif next_frame_number % 30 == 0:
-                                print(f"MJPEG ingest: buffer_size={len(frame_buffer)} (last #{next_frame_number})")
-                            next_frame_number += 1
+                            lower = hdr.decode('latin1').strip().lower()
+                            if lower.startswith('content-length:'):
+                                content_length = int(lower.split(':', 1)[1].strip())
                         except Exception:
-                            continue
+                            pass
+                    if content_length is None:
+                        # Fallback: skip this part if no length; avoid scanning
+                        continue
+                    try:
+                        body = await reader.readexactly(content_length)
+                        # Some senders add trailing CRLF after body; read and ignore up to 2 bytes
+                        _ = await reader.readany()
+                    except Exception:
+                        break
+                    try:
+                        b64 = base64.b64encode(body).decode('utf-8')
+                        frame_buffer.append({
+                            'frame_number': next_frame_number,
+                            'frame_data': b64,
+                            'timestamp': datetime.now().isoformat(),
+                        })
+                        if next_frame_number == 0:
+                            print('MJPEG ingest: first frame appended, buffer_size=1')
+                        elif next_frame_number % 30 == 0:
+                            print(f"MJPEG ingest: buffer_size={len(frame_buffer)} (last #{next_frame_number})")
+                        next_frame_number += 1
+                    except Exception:
+                        pass
     except Exception:
-        # swallow errors; ingest can be restarted on next request
         return
 
 async def sse_events_handler(request: web.Request) -> web.StreamResponse:
@@ -559,7 +560,6 @@ async def sse_events_handler(request: web.Request) -> web.StreamResponse:
                 data = json.dumps(message.get('data', {}))
                 await response.write(f"event: {event}\n".encode('utf-8'))
                 await response.write(f"data: {data}\n\n".encode('utf-8'))
-                await response.drain()
             except (ConnectionResetError, asyncio.CancelledError, RuntimeError):
                 break
     finally:
