@@ -453,6 +453,15 @@
                     recordingStartTime = Date.now();
                     // Ensure any previous frames are cleared when starting a new recording
                     try { clearFrameBuffer(); } catch (e) { console.warn('clearFrameBuffer failed', e); }
+                    // Explicitly reset front-end buffered playback state and UI counters
+                    try {
+                        frameBuffer = [];
+                        nextFetchIndex = 0;
+                        currentFrameIndex = 0;
+                        frameCount.textContent = '0';
+                        currentFrame.textContent = '-';
+                        playbackFPS.textContent = '-';
+                    } catch (e) { /* ignore */ }
                     startTimer();
                     
                     isRecording = true;
