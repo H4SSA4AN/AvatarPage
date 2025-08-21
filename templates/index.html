@@ -618,10 +618,7 @@
                         playButton.disabled = true;
                         pauseButton.disabled = true;
                         
-                        updateStreamStatus('waiting', 'Waiting for MJPEG stream to start...');
-                        
-                        // Start MJPEG stream (optional keepalive), buffering handled via /get_frame_buffer polling
-                        startMjpegStream();
+                        updateStreamStatus('waiting', 'Waiting for buffered frames...');
                     } else {
                         showStatus('Error processing recording: ' + result.error, 'error');
                         updateStreamStatus('error', 'Processing failed');
