@@ -26,6 +26,23 @@ processing_complete = False
 start_signal_received = False
 
 
+# CORS middleware
+@web.middleware
+async def cors_middleware(request, handler):
+    # Handle preflight
+    if request.method == 'OPTIONS':
+        resp = web.Response(status=200)
+    else:
+        resp = await handler(request)
+    origin = request.headers.get('Origin', '*')
+    resp.headers['Access-Control-Allow-Origin'] = origin
+    resp.headers['Vary'] = 'Origin'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    resp.headers['Access-Control-Allow-Credentials'] = 'false'
+    return resp
+
+
 async def index_handler(request: web.Request) -> web.Response:
     try:
         with open(os.path.join('templates', 'index.html'), 'r', encoding='utf-8') as f:
@@ -185,6 +202,10 @@ async def clear_buffer_handler(request: web.Request) -> web.Response:
     return web.json_response({'success': True})
 
 
+async def options_handler(request: web.Request) -> web.Response:
+    return web.Response(status=200)
+
+
 async def probe_musetalk_handler(request: web.Request) -> web.Response:
     try:
         data = await request.json()
@@ -311,8 +332,10 @@ async def mjpeg_stream_handler(request: web.Request) -> web.StreamResponse:
 
 
 def create_app() -> web.Application:
-    app = web.Application(client_max_size=MAX_AUDIO_SIZE)
+    app = web.Application(client_max_size=MAX_AUDIO_SIZE, middlewares=[cors_middleware])
     app.router.add_get('/', index_handler)
+    # Generic OPTIONS for all routes (helps some proxies)
+    app.router.add_route('OPTIONS', '/{tail:.*}', index_handler)
     app.router.add_post('/save_audio', save_audio_handler)
     app.router.add_post('/stream_frames', stream_frames_handler)
     app.router.add_post('/probe_musetalk', probe_musetalk_handler)
