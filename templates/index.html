@@ -907,6 +907,7 @@
             targetFPS = Math.max(1, Math.min(60, targetFPS));
             const frameIntervalMs = 1000 / targetFPS;
             let lastTime = performance.now();
+            let stallStartMs = 0; // skip a frame if it can't decode after brief wait
 
             function predecodeFrames(startIdx, count) {
                 const end = Math.min(frameBuffer.length, startIdx + count);
@@ -1004,6 +1005,14 @@
                                 firstFrameDrawn = true;
                             }
                             currentFrameIndex += 1;
+                        } else {
+                            // Not yet decodable; if stalled too long, skip this frame to keep motion
+                            const nowMs = now;
+                            if (!stallStartMs) stallStartMs = nowMs;
+                            if (nowMs - stallStartMs > Math.max(150, frameIntervalMs * 2)) {
+                                stallStartMs = 0;
+                                currentFrameIndex += 1;
+                            }
                         }
                     } else {
                         // If no more frames yet
