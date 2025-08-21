@@ -33,8 +33,8 @@ MAX_BUFFER_FRAMES = 3000
 # SSE clients (queues per connection)
 sse_queues = []  # type: list
 
-# Use MJPEG upstream ingest for fastest transmission from MuseTalk to aio_app
-USE_MJPEG_INGEST = True
+# Use NDJSON/JSON buffer POSTs from MuseTalk (disable MJPEG ingest to avoid per-frame path)
+USE_MJPEG_INGEST = False
 
 # MJPEG ingest task handle
 _mjpeg_ingest_task = None
