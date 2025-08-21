@@ -857,6 +857,14 @@
                     processingCompleteFlag = Boolean(data.processing_complete);
                     const prevStart = startSignalReceived;
                     startSignalReceived = Boolean(data.start_signal_received);
+                    
+                    // DEBUG: Log when start signal changes
+                    if (startSignalReceived !== prevStart) {
+                        console.log('[DEBUG] startSignalReceived changed:', prevStart, '->', startSignalReceived);
+                        console.log('[DEBUG] frameBuffer.length:', frameBuffer.length);
+                        console.log('[DEBUG] data.start_signal_received:', data.start_signal_received);
+                    }
+                    
                     if (startSignalReceived && !prevStart && !playbackStartedBySignal) {
                         console.log('[Signal] start received');
                         playbackStartedBySignal = true;
