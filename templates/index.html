@@ -393,6 +393,7 @@
         const connectButton = document.getElementById('connectButton');
         const connectStatus = document.getElementById('connectStatus');
         let startSignalReceived = false;
+        let playbackStartedBySignal = false;
         let firstFrameDrawn = false;
         let mjpegDrawRaf = null;
         let mjpegReady = false;
@@ -854,7 +855,13 @@
                     } catch {}
                     nextFetchIndex = data.next_index || nextFetchIndex;
                     processingCompleteFlag = Boolean(data.processing_complete);
+                    const prevStart = startSignalReceived;
                     startSignalReceived = Boolean(data.start_signal_received);
+                    if (startSignalReceived && !prevStart && !playbackStartedBySignal) {
+                        playbackStartedBySignal = true;
+                        // Ensure playback loop is running; it'll start drawing now
+                        try { updateStreamStatus('streaming', 'Start signal received — playing buffered frames'); } catch {}
+                    }
                     // Reflect server-side buffer size to avoid drift with client-side buffer
                     frameCount.textContent = String(data.buffer_size ?? frameBuffer.length);
                 } catch (e) {
