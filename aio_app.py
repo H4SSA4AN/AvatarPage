@@ -148,14 +148,16 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
     # Silent start
 
     try:
-        print(f"Incoming POST /stream_frames from {getattr(request, 'remote', None) or request.transport.get_extra_info('peername')}")
+        peer = getattr(request, 'remote', None) or (request.transport and request.transport.get_extra_info('peername'))
+        ctype_log = request.headers.get('Content-Type', '')
+        print(f"Incoming POST /stream_frames from {peer} | Content-Type: {ctype_log}")
     except Exception:
         pass
 
     # Fast path: accept single-buffer JSON POSTs and log frames count
     try:
-        ctype = request.headers.get('Content-Type', '')
-        if 'application/json' in ctype and 'ndjson' not in ctype:
+        ctype = (request.headers.get('Content-Type', '') or '').lower()
+        if 'ndjson' not in ctype and 'json' in ctype:
             payload = await request.json()
             status = payload.get('status')
             if status == 'start':
