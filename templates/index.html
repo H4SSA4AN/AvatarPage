@@ -451,6 +451,8 @@
                     mediaRecorder.start();
                     startTime = Date.now();
                     recordingStartTime = Date.now();
+                    // Ensure any previous frames are cleared when starting a new recording
+                    try { clearFrameBuffer(); } catch (e) { console.warn('clearFrameBuffer failed', e); }
                     startTimer();
                     
                     isRecording = true;
