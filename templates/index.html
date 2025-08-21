@@ -823,7 +823,7 @@
                 if (!bufferPolling) return;
                 try {
                     // Request frames in chunks to reduce payload size and latency
-                    const res = await fetch(`/get_frame_buffer?from_index=${nextFetchIndex}&limit=200`);
+                    const res = await fetch(`/get_frame_buffer?from_index=${nextFetchIndex}&limit=20`);
                     const data = await res.json();
                     const newFrames = data.frames || [];
                     // Push into buffer

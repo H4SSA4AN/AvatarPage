@@ -460,6 +460,15 @@ async def _mjpeg_ingest_worker(ingest_url: str):
         async with ClientSession(timeout=timeout) as session:
             async with session.get(ingest_url) as resp:
                 reader = resp.content
+                # Improve TCP receive buffer for high-throughput MJPEG
+                try:
+                    transport = resp.connection and resp.connection.transport
+                    if transport and hasattr(transport, 'get_extra_info'):
+                        sock = transport.get_extra_info('socket')
+                        if sock:
+                            sock.setsockopt(__import__('socket').SOL_SOCKET, __import__('socket').SO_RCVBUF, 1 << 20)
+                except Exception:
+                    pass
                 ctype = resp.headers.get('Content-Type', '')
                 boundary_token = 'frame'
                 if 'boundary=' in ctype:
