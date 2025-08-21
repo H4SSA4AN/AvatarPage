@@ -28,6 +28,9 @@ start_signal_received = False
 # SSE clients (queues per connection)
 sse_queues = []  # type: list
 
+# MJPEG ingest task handle
+_mjpeg_ingest_task = None
+
 
 # CORS middleware
 @web.middleware
@@ -110,6 +113,13 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         async with ClientSession(timeout=timeout) as session:
             async with session.post(musetalk_url, data=form) as resp:
                 text = await resp.text()
+                # Start MJPEG ingest from MuseTalk to use MJPEG for transmission upstream
+                try:
+                    base = musetalk_base_url
+                    ingest_url = base + '/mjpeg_stream'
+                    _start_mjpeg_ingest(ingest_url)
+                except Exception:
+                    pass
                 return web.json_response({
                     'success': resp.status == 200,
                     'message': 'Audio forwarded to MuseTalk',
@@ -420,6 +430,77 @@ async def mjpeg_stream_handler(request: web.Request) -> web.StreamResponse:
             pass
     return response
 
+
+def _start_mjpeg_ingest(ingest_url: str) -> None:
+    global _mjpeg_ingest_task
+    if _mjpeg_ingest_task and not _mjpeg_ingest_task.done():
+        return
+    loop = asyncio.get_event_loop()
+    _mjpeg_ingest_task = loop.create_task(_mjpeg_ingest_worker(ingest_url))
+
+
+async def _mjpeg_ingest_worker(ingest_url: str):
+    global frame_buffer
+    timeout = aiohttp.ClientTimeout(total=None)
+    try:
+        async with ClientSession(timeout=timeout) as session:
+            async with session.get(ingest_url) as resp:
+                ctype = resp.headers.get('Content-Type', '')
+                boundary_token = 'frame'
+                if 'boundary=' in ctype:
+                    try:
+                        boundary_token = ctype.split('boundary=')[1].strip()
+                    except Exception:
+                        boundary_token = 'frame'
+                boundary = ('--' + boundary_token).encode('utf-8')
+                buf = b''
+                next_frame_number = 0
+
+                async for chunk in resp.content.iter_chunked(65536):
+                    if not chunk:
+                        continue
+                    buf += chunk
+                    while True:
+                        start = buf.find(boundary)
+                        if start == -1:
+                            # keep buffer from growing without bound
+                            if len(buf) > 2_000_000:
+                                buf = buf[-1_000_000:]
+                            break
+                        # Find next boundary to get a full part
+                        next_pos = buf.find(boundary, start + len(boundary))
+                        if next_pos == -1:
+                            # need more data
+                            # trim leading noise before start
+                            if start > 0:
+                                buf = buf[start:]
+                            break
+                        part = buf[start + len(boundary):next_pos]
+                        buf = buf[next_pos:]
+                        # part begins with CRLF, headers, CRLFCRLF, then JPEG
+                        try:
+                            if part.startswith(b"\r\n"):
+                                part = part[2:]
+                            head_end = part.find(b"\r\n\r\n")
+                            if head_end == -1:
+                                continue
+                            body = part[head_end + 4:]
+                            # Strip possible trailing CRLF
+                            if body.endswith(b"\r\n"):
+                                body = body[:-2]
+                            # Append to buffer
+                            b64 = base64.b64encode(body).decode('utf-8')
+                            frame_buffer.append({
+                                'frame_number': next_frame_number,
+                                'frame_data': b64,
+                                'timestamp': datetime.now().isoformat(),
+                            })
+                            next_frame_number += 1
+                        except Exception:
+                            continue
+    except Exception:
+        # swallow errors; ingest can be restarted on next request
+        return
 
 async def sse_events_handler(request: web.Request) -> web.StreamResponse:
     """Server-Sent Events endpoint to push start/finished signals to the web page."""
