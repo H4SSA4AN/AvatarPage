@@ -861,6 +861,8 @@
                         console.log('[Signal] start received');
                         playbackStartedBySignal = true;
                         // Ensure playback loop is running; it'll start drawing now
+                        try { startBufferPlaybackLoop(); } catch {}
+                        try { playButton.disabled = false; pauseButton.disabled = false; } catch {}
                         try { updateStreamStatus('streaming', 'Start signal received — playing buffered frames'); } catch {}
                     }
                     // Reflect server-side buffer size to avoid drift with client-side buffer
