@@ -1041,6 +1041,14 @@
                     ctx.drawImage(bmp, x, y, w, h);
                     canvas.classList.add('active');
                     currentFrame.textContent = String(entry.frame_number ?? i);
+                    // Start audio on first ever drawn frame
+                    try {
+                        if (!firstFrameDrawn && audioPlayer && audioPlayer.src) {
+                            audioPlayer.currentTime = 0;
+                            const p = audioPlayer.play();
+                            if (p && typeof p.then === 'function') p.catch(() => {});
+                        }
+                    } catch {}
                     firstFrameDrawn = true;
                     currentFrameIndex = i + 1;
                     return true;
@@ -1053,6 +1061,14 @@
                     ctx.drawImage(img, x, y, w, h);
                     canvas.classList.add('active');
                     currentFrame.textContent = String(entry.frame_number ?? i);
+                    // Start audio on first ever drawn frame
+                    try {
+                        if (!firstFrameDrawn && audioPlayer && audioPlayer.src) {
+                            audioPlayer.currentTime = 0;
+                            const p = audioPlayer.play();
+                            if (p && typeof p.then === 'function') p.catch(() => {});
+                        }
+                    } catch {}
                     firstFrameDrawn = true;
                     currentFrameIndex = i + 1;
                     return true;
