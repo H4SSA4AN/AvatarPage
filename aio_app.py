@@ -44,6 +44,7 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         audio_data = data.get('audio_data')
         fps = str(data.get('fps', '25'))
         batch_size = str(data.get('batch_size', '20'))
+        musetalk_base_url = data.get('musetalk_url') or os.environ.get('MUSETALK_URL', 'http://localhost:8085')
 
         if not audio_data:
             return web.json_response({'error': 'No audio data received'}, status=400)
@@ -63,8 +64,20 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         with open(filepath, 'wb') as f:
             f.write(audio_bytes)
 
-        musetalk_url = 'http://localhost:8085/process'
-        stream_url = 'http://localhost:5000/stream_frames'
+        # Normalize MuseTalk base URL and build process endpoint
+        musetalk_base_url = str(musetalk_base_url).strip()
+        if musetalk_base_url.endswith('/'):
+            musetalk_base_url = musetalk_base_url[:-1]
+        if not (musetalk_base_url.startswith('http://') or musetalk_base_url.startswith('https://')):
+            musetalk_base_url = 'http://' + musetalk_base_url
+        musetalk_url = musetalk_base_url + '/process'
+
+        # Build a public callback URL for MuseTalk to POST frames back to this app
+        xf_proto = request.headers.get('X-Forwarded-Proto')
+        xf_host = request.headers.get('X-Forwarded-Host')
+        scheme = xf_proto or request.scheme
+        host = xf_host or request.host
+        stream_url = f"{scheme}://{host}/stream_frames"
 
         form = aiohttp.FormData()
         form.add_field('audio', open(filepath, 'rb'), filename='input.wav', content_type='audio/wav')
@@ -81,6 +94,8 @@ async def save_audio_handler(request: web.Request) -> web.Response:
                     'success': resp.status == 200,
                     'message': 'Audio forwarded to MuseTalk',
                     'musetalk_response': text,
+                    'musetalk_url': musetalk_url,
+                    'stream_url': stream_url,
                 }, status=200 if resp.status == 200 else 502)
 
     except Exception as e:

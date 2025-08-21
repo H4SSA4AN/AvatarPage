@@ -313,6 +313,10 @@
                         <label for="batchSizeInput">Batch Size:</label>
                         <input type="number" id="batchSizeInput" value="20" min="1" max="50" class="setting-input">
                     </div>
+                    <div class="setting-item" style="grid-column: 1 / span 2; width: 100%;">
+                        <label for="musetalkUrlInput">MuseTalk Service URL (http://IP:port):</label>
+                        <input type="text" id="musetalkUrlInput" value="http://localhost:8085" class="setting-input" placeholder="http://192.168.1.50:8085">
+                    </div>
                 </div>
                 
                 <div class="limits-info">
@@ -560,6 +564,7 @@
                     // Get settings values
                     const fps = document.getElementById('fpsInput').value;
                     const batchSize = document.getElementById('batchSizeInput').value;
+                    const musetalkUrl = document.getElementById('musetalkUrlInput').value;
                     
                     const response = await fetch('/save_audio', {
                         method: 'POST',
@@ -569,7 +574,8 @@
                         body: JSON.stringify({
                             audio_data: base64Data,
                             fps: fps,
-                            batch_size: batchSize
+                            batch_size: batchSize,
+                            musetalk_url: musetalkUrl
                         })
                     });
 
@@ -889,6 +895,21 @@
             // Start buffered fetching and playback by default
             startBufferPolling();
             startBufferPlaybackLoop();
+
+            // Restore MuseTalk URL from localStorage
+            const urlInput = document.getElementById('musetalkUrlInput');
+            try {
+                const savedUrl = localStorage.getItem('musetalk_url');
+                if (savedUrl && urlInput) urlInput.value = savedUrl;
+            } catch {}
+            // Persist on change
+            if (urlInput) {
+                const persist = () => {
+                    try { localStorage.setItem('musetalk_url', urlInput.value || ''); } catch {}
+                };
+                urlInput.addEventListener('change', persist);
+                urlInput.addEventListener('input', persist);
+            }
         });
 
         function startPlayback() {
