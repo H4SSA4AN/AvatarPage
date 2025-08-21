@@ -147,6 +147,56 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
     global frame_buffer, processing_complete, start_signal_received, initial_flush_pending, initial_buffer_received
     # Silent start
 
+    try:
+        print(f"Incoming POST /stream_frames from {getattr(request, 'remote', None) or request.transport.get_extra_info('peername')}")
+    except Exception:
+        pass
+
+    # Fast path: accept single-buffer JSON POSTs and log frames count
+    try:
+        ctype = request.headers.get('Content-Type', '')
+        if 'application/json' in ctype and 'ndjson' not in ctype:
+            payload = await request.json()
+            status = payload.get('status')
+            if status == 'start':
+                start_signal_received = True
+                initial_flush_pending = True
+                initial_buffer_received = False
+                print('Start signal received from MuseTalk (JSON)')
+                return web.json_response({'ok': True})
+            if status == 'finished':
+                processing_complete = True
+                return web.json_response({'ok': True})
+
+            frames = payload.get('frames', []) or []
+            added = 0
+            last_num = None
+            for fr in frames:
+                b64 = fr.get('frame_data')
+                if not b64:
+                    continue
+                last_num = fr.get('frame_number', 0)
+                try:
+                    frame_bytes = base64.b64decode(b64)
+                except Exception:
+                    continue
+                frame_buffer.append({
+                    'frame_number': last_num,
+                    'frame_bytes': frame_bytes,
+                    'timestamp': datetime.now().isoformat(),
+                })
+                if len(frame_buffer) > MAX_BUFFER_FRAMES:
+                    del frame_buffer[: len(frame_buffer) - MAX_BUFFER_FRAMES]
+                added += 1
+            if initial_flush_pending:
+                initial_flush_pending = False
+                initial_buffer_received = True
+            print(f"Batch POST received: frames={added} (last #{last_num}) | buffer_size={len(frame_buffer)}")
+            return web.json_response({'ok': True, 'frames_added': added})
+    except Exception:
+        # Fall through to NDJSON streaming if JSON path fails
+        pass
+
     buf = b''
     total_lines = 0
     total_frames_received = 0
