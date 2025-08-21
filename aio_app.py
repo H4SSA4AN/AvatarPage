@@ -25,6 +25,15 @@ frame_buffer = []
 processing_complete = False
 start_signal_received = False
 
+# SSE clients (queues per connection)
+sse_queues = []  # type: list
+
+# Prefer MJPEG ingest from MuseTalk over NDJSON frames to avoid duplicates
+USE_MJPEG_INGEST = True
+
+# MJPEG ingest task handle
+_mjpeg_ingest_task = None
+
 
 # CORS middleware
 @web.middleware
