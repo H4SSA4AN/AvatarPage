@@ -185,6 +185,40 @@ async def clear_buffer_handler(request: web.Request) -> web.Response:
     return web.json_response({'success': True})
 
 
+async def probe_musetalk_handler(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+        musetalk_base_url = data.get('musetalk_url')
+        if not musetalk_base_url:
+            return web.json_response({'success': False, 'error': 'musetalk_url missing'}, status=400)
+
+        musetalk_base_url = str(musetalk_base_url).strip()
+        if musetalk_base_url.endswith('/'):
+            musetalk_base_url = musetalk_base_url[:-1]
+        if not (musetalk_base_url.startswith('http://') or musetalk_base_url.startswith('https://')):
+            musetalk_base_url = 'http://' + musetalk_base_url
+
+        url = musetalk_base_url + '/health'
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with ClientSession(timeout=timeout) as session:
+            async with session.get(url) as resp:
+                ct = resp.headers.get('Content-Type', '')
+                try:
+                    body = await resp.json()
+                except Exception:
+                    body = await resp.text()
+                return web.json_response({
+                    'success': resp.status == 200,
+                    'status': resp.status,
+                    'url': url,
+                    'content_type': ct,
+                    'body': body,
+                }, status=200 if resp.status == 200 else 502)
+    except Exception as e:
+        logger.exception('probe_musetalk error')
+        return web.json_response({'success': False, 'error': str(e)}, status=500)
+
+
 async def get_frame_buffer_handler(request: web.Request) -> web.Response:
     """Return frames; supports incremental fetch via ?from_index=N"""
     try:
@@ -281,6 +315,7 @@ def create_app() -> web.Application:
     app.router.add_get('/', index_handler)
     app.router.add_post('/save_audio', save_audio_handler)
     app.router.add_post('/stream_frames', stream_frames_handler)
+    app.router.add_post('/probe_musetalk', probe_musetalk_handler)
     app.router.add_get('/clear_buffer', clear_buffer_handler)
     app.router.add_get('/get_frame_buffer', get_frame_buffer_handler)
     app.router.add_get('/mjpeg_stream', mjpeg_stream_handler)

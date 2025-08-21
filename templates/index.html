@@ -318,6 +318,10 @@
                         <input type="text" id="musetalkUrlInput" value="http://localhost:8085" class="setting-input" placeholder="http://192.168.1.50:8085">
                     </div>
                 </div>
+                <div class="controls" style="margin-top: 12px;">
+                    <button class="record-button" id="connectButton">🔌 Connect</button>
+                </div>
+                <div class="status hidden" id="connectStatus"></div>
                 
                 <div class="limits-info">
                     <p><small>📝 Recording limits: Max 5 minutes, Max 100MB</small></p>
@@ -386,6 +390,8 @@
         const pauseButton = document.getElementById('pauseButton');
         const recordingDuration = document.getElementById('recordingDuration');
         const fileSize = document.getElementById('fileSize');
+        const connectButton = document.getElementById('connectButton');
+        const connectStatus = document.getElementById('connectStatus');
         let firstFrameDrawn = false;
         let mjpegDrawRaf = null;
         let mjpegReady = false;
@@ -400,6 +406,7 @@
         recordButton.addEventListener('click', toggleRecording);
         playButton.addEventListener('click', startPlayback);
         pauseButton.addEventListener('click', stopPlayback);
+        connectButton.addEventListener('click', connectToMusetalk);
 
         let isRecording = false;
         let mjpegStream = null;
@@ -631,6 +638,40 @@
             setTimeout(() => {
                 status.classList.add('hidden');
             }, 5000);
+        }
+
+        function showConnectStatus(message, type) {
+            connectStatus.textContent = message;
+            connectStatus.className = `status ${type}`;
+            connectStatus.classList.remove('hidden');
+            setTimeout(() => {
+                connectStatus.classList.add('hidden');
+            }, 6000);
+        }
+
+        async function connectToMusetalk() {
+            const urlInput = document.getElementById('musetalkUrlInput');
+            const baseUrl = (urlInput.value || '').trim();
+            if (!baseUrl) {
+                showConnectStatus('Please enter a MuseTalk URL', 'error');
+                return;
+            }
+            try {
+                showConnectStatus('Connecting to MuseTalk...', 'recording');
+                const resp = await fetch('/probe_musetalk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ musetalk_url: baseUrl })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    showConnectStatus('Connected to MuseTalk service successfully', 'success');
+                } else {
+                    showConnectStatus(`Connection failed (${data.status || 'error'})`, 'error');
+                }
+            } catch (e) {
+                showConnectStatus('Connection error: ' + (e?.message || e), 'error');
+            }
         }
 
         function clearFrameBuffer() {
