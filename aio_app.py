@@ -145,6 +145,7 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
         if status == 'start':
             start_signal_received = True
             print('Start signal received from MuseTalk')
+            print(f'DEBUG: start_signal_received set to {start_signal_received}')
             return
         if status == 'finished':
             processing_complete = True
@@ -326,13 +327,15 @@ async def get_frame_buffer_handler(request: web.Request) -> web.Response:
             else:
                 frames_slice = frame_buffer[:limit]
                 next_index = min(len(frame_buffer), limit)
-        return web.json_response({
+        response_data = {
             'frames': frames_slice,
             'buffer_size': len(frame_buffer),
             'next_index': next_index,
             'processing_complete': processing_complete,
             'start_signal_received': start_signal_received,
-        })
+        }
+        print(f'DEBUG: /get_frame_buffer returning start_signal_received={start_signal_received}')
+        return web.json_response(response_data)
     except Exception as e:
         # Suppress GET logging to reduce console noise
         return web.json_response({'error': str(e)}, status=500)
