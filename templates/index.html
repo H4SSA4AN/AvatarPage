@@ -405,6 +405,7 @@
         let nextFetchIndex = 0;
         let processingCompleteFlag = false;
         const DECODE_CONCURRENCY = 4;
+        const PREDECODE_AHEAD = 30;
 
         recordButton.addEventListener('click', toggleRecording);
         playButton.addEventListener('click', startPlayback);
@@ -864,6 +865,8 @@
                         try { startBufferPlaybackLoop(); } catch {}
                         try { playButton.disabled = false; pauseButton.disabled = false; } catch {}
                         try { updateStreamStatus('streaming', 'Start signal received — playing buffered frames'); } catch {}
+                        // Kick off predecode of initial frames for smooth start
+                        try { predecodeFrames(0, PREDECODE_AHEAD); } catch {}
                     }
                     // Reflect server-side buffer size to avoid drift with client-side buffer
                     frameCount.textContent = String(data.buffer_size ?? frameBuffer.length);
@@ -892,6 +895,29 @@
             const frameIntervalMs = 1000 / targetFPS;
             let lastTime = performance.now();
 
+            function predecodeFrames(startIdx, count) {
+                const end = Math.min(frameBuffer.length, startIdx + count);
+                let active = 0;
+                for (let i = startIdx; i < end; i++) {
+                    const entry = frameBuffer[i];
+                    if (!entry || entry._bmp || (entry._img && entry._img.naturalWidth > 0)) continue;
+                    if ('createImageBitmap' in window) {
+                        if (active >= DECODE_CONCURRENCY) break;
+                        try {
+                            const blob = base64JpegToBlob(entry.frame_data);
+                            active += 1;
+                            createImageBitmap(blob).then(bmp => { entry._bmp = bmp; }).catch(() => {}).finally(() => { active -= 1; });
+                        } catch {}
+                    } else {
+                        try {
+                            const img = new Image();
+                            img.src = `data:image/jpeg;base64,${entry.frame_data}`;
+                            entry._img = img;
+                        } catch {}
+                    }
+                }
+            }
+
             const drawNext = (now) => {
                 const elapsed = now - lastTime;
                 if (elapsed >= frameIntervalMs) {
@@ -899,6 +925,8 @@
                     if (!startSignalReceived) {
                         // Waiting for start signal; do not render yet
                     } else if (currentFrameIndex < frameBuffer.length) {
+                        // Opportunistically predecode a small window ahead of current index
+                        try { predecodeFrames(currentFrameIndex, PREDECODE_AHEAD); } catch {}
                         const entry = frameBuffer[currentFrameIndex];
                         const bmp = entry._bmp;
                         const img = entry._img;
