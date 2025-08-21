@@ -1006,10 +1006,8 @@
                             currentFrameIndex += 1;
                         }
                     } else {
-                        // If no more frames yet and not complete, wait for buffer to grow
-                        if (processingCompleteFlag) {
-                            // Hold on last frame once complete
-                        }
+                        // If no more frames yet
+                        // Wait for buffer to grow or finish on completion
                     }
                 }
                 bufferPlaybackRaf = requestAnimationFrame(drawNext);
