@@ -287,21 +287,21 @@
         <!-- Left Panel - Audio Recording -->
         <div class="panel">
             <h1>Audio Recording</h1>
-            
+
             <div class="recorder-section">
                 <div class="timer" id="timer">00:00</div>
-                
+
                                  <div class="controls">
                      <button class="record-button" id="recordButton">
                          🎙️ Start Recording
                      </button>
                  </div>
-                
+
                 <div class="status hidden" id="status"></div>
-                
+
                 <audio class="audio-player hidden" id="audioPlayer" controls></audio>
             </div>
-            
+
             <div class="settings-section">
                 <h3>Processing Settings</h3>
                 <div class="settings-grid">
@@ -322,7 +322,7 @@
                     <button class="record-button" id="connectButton">🔌 Connect</button>
                 </div>
                 <div class="status hidden" id="connectStatus"></div>
-                
+
                 <div class="limits-info">
                     <p><small>📝 Recording limits: Max 5 minutes, Max 100MB</small></p>
                     <p><small>⏱️ Current recording: <span id="recordingDuration">00:00</span></small></p>
@@ -334,7 +334,7 @@
         <!-- Right Panel - MuseTalk Stream -->
         <div class="stream-panel">
             <h1>Avatar Stream</h1>
-            
+
                          <div class="video-container" id="videoContainer">
                  <div class="video-placeholder" id="videoPlaceholder">
                      Waiting for stream...
@@ -342,11 +342,11 @@
                  <canvas class="stream-video" id="streamVideo" alt="Avatar Stream"></canvas>
                 <img id="mjpegImg" style="position:absolute; left:-9999px; top:-9999px; width:1px; height:1px; opacity:0;" alt="mjpeg-source" />
              </div>
-            
+
             <div class="stream-status waiting" id="streamStatus">
                 Ready to receive frames
             </div>
-            
+
             <div class="stream-controls">
                 <button class="record-button" id="playButton" disabled>
                     ▶️ Play
@@ -355,7 +355,7 @@
                     ⏸️ Pause
                 </button>
             </div>
-            
+
             <div class="stream-info" id="streamInfo">
                 <p>Frames in buffer: <span id="frameCount">0</span></p>
                 <p>Current frame: <span id="currentFrame">-</span></p>
@@ -376,7 +376,7 @@
         const status = document.getElementById('status');
         const audioPlayer = document.getElementById('audioPlayer');
         const timer = document.getElementById('timer');
-        
+
         // Stream elements
         const videoContainer = document.getElementById('videoContainer');
         const videoPlaceholder = document.getElementById('videoPlaceholder');
@@ -392,9 +392,7 @@
         const fileSize = document.getElementById('fileSize');
         const connectButton = document.getElementById('connectButton');
         const connectStatus = document.getElementById('connectStatus');
-        // Start gating removed: play as soon as frames exist
-        let startSignalReceived = true;
-        let playbackStartedBySignal = true;
+        let startSignalReceived = false;
         let firstFrameDrawn = false;
         let mjpegDrawRaf = null;
         let mjpegReady = false;
@@ -405,8 +403,6 @@
         let bufferPolling = false;
         let nextFetchIndex = 0;
         let processingCompleteFlag = false;
-        const DECODE_CONCURRENCY = 4;
-        const PREDECODE_AHEAD = 30;
 
         recordButton.addEventListener('click', toggleRecording);
         playButton.addEventListener('click', startPlayback);
@@ -440,7 +436,7 @@
                         const audioUrl = URL.createObjectURL(audioBlob);
                         audioPlayer.src = audioUrl;
                         audioPlayer.classList.remove('hidden');
-                        
+
                         // Check file size before processing
                         const fileSizeMB = audioBlob.size / (1024 * 1024);
                         if (fileSizeMB > MAX_FILE_SIZE_MB) {
@@ -448,7 +444,7 @@
                             updateStreamStatus('error', 'File too large');
                             return;
                         }
-                        
+
                         // Automatically save and process the recording
                         saveAndProcessRecording();
                     };
@@ -466,22 +462,18 @@
                         frameCount.textContent = '0';
                         currentFrame.textContent = '-';
                         playbackFPS.textContent = '-';
-                        // No start gating; playback runs when frames are available
-                        startSignalReceived = true;
-                        playbackStartedBySignal = true;
-                        firstFrameDrawn = false;
                     } catch (e) { /* ignore */ }
                     startTimer();
-                    
+
                     isRecording = true;
                     recordButton.textContent = '⏹️ Stop Recording';
                     recordButton.classList.add('recording');
-                    
+
                     showStatus('Recording...', 'recording');
-                    
+
                     // Start duration check
                     startDurationCheck();
-                    
+
                 } catch (error) {
                     showStatus('Error accessing microphone: ' + error.message, 'error');
                 }
@@ -490,13 +482,13 @@
                 if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                     mediaRecorder.stop();
                     mediaRecorder.stream.getTracks().forEach(track => track.stop());
-                    
+
                     stopTimer();
                     stopDurationCheck();
                     isRecording = false;
                     recordButton.textContent = '🎙️ Start Recording';
                     recordButton.classList.remove('recording');
-                    
+
                     showStatus('Recording stopped. You can now save or record again.', 'success');
                 }
             }
@@ -509,18 +501,18 @@
                     clearInterval(durationCheckInterval);
                     return;
                 }
-                
+
                 const elapsed = (Date.now() - recordingStartTime) / 1000;
-                
+
                 // Update duration display
                 const minutes = Math.floor(elapsed / 60);
                 const seconds = Math.floor(elapsed % 60);
                 recordingDuration.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-                
+
                 // Update file size estimate (rough estimate: ~1MB per minute for webm)
                 const estimatedSizeMB = (elapsed / 60) * 1.2; // Conservative estimate
                 fileSize.textContent = `${estimatedSizeMB.toFixed(1)} MB`;
-                
+
                 if (elapsed >= MAX_RECORDING_DURATION) {
                     showStatus(`Maximum recording duration (${MAX_RECORDING_DURATION} seconds) reached.`, 'error');
                     toggleRecording(); // Stop recording
@@ -551,7 +543,7 @@
             // Check file size again
             const fileSizeMB = audioBlob.size / (1024 * 1024);
             fileSize.textContent = `${fileSizeMB.toFixed(1)} MB`;
-            
+
             if (fileSizeMB > MAX_FILE_SIZE_MB) {
                 showStatus(`Recording too large (${fileSizeMB.toFixed(1)}MB). Maximum size is ${MAX_FILE_SIZE_MB}MB.`, 'error');
                 updateStreamStatus('error', 'File too large');
@@ -560,20 +552,20 @@
 
             try {
                 showStatus('Processing recording...', 'recording');
-                
+
                 // Convert to WAV format using Web Audio API
                 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const arrayBuffer = await audioBlob.arrayBuffer();
                 const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                
+
                 // Create WAV file
                 const wavBlob = audioBufferToWav(audioBuffer);
                 const wavUrl = URL.createObjectURL(wavBlob);
-                
+
                 // Check WAV file size
                 const wavSizeMB = wavBlob.size / (1024 * 1024);
                 fileSize.textContent = `${wavSizeMB.toFixed(1)} MB (WAV)`;
-                
+
                 if (wavSizeMB > MAX_FILE_SIZE_MB) {
                     showStatus(`WAV file too large (${wavSizeMB.toFixed(1)}MB). Maximum size is ${MAX_FILE_SIZE_MB}MB.`, 'error');
                     updateStreamStatus('error', 'WAV file too large');
@@ -582,17 +574,17 @@
                 // Use WAV for playback to match the audio sent to the server
                 audioPlayer.src = wavUrl;
                 audioPlayer.classList.remove('hidden');
-                
+
                 // Convert WAV to base64 and send to server
                 const reader = new FileReader();
                 reader.onload = async function() {
                     const base64Data = reader.result;
-                    
+
                     // Get settings values
                     const fps = document.getElementById('fpsInput').value;
                     const batchSize = document.getElementById('batchSizeInput').value;
                     const musetalkUrl = document.getElementById('musetalkUrlInput').value;
-                    
+
                     const response = await fetch('/save_audio', {
                         method: 'POST',
                         headers: {
@@ -607,26 +599,29 @@
                     });
 
                     const result = await response.json();
-                    
+
                     if (result.success) {
                         showStatus('Recording saved and sent to MuseTalk for processing', 'success');
-                        
+
                         // Clear current buffer and stop playback
                         clearFrameBuffer();
                         stopPlayback();
-                        
+
                         // Reset button states
                         playButton.disabled = true;
                         pauseButton.disabled = true;
-                        
-                        updateStreamStatus('waiting', 'Waiting for buffered frames...');
+
+                        updateStreamStatus('waiting', 'Waiting for MJPEG stream to start...');
+
+                        // Start MJPEG streaming
+                        startMjpegStream();
                     } else {
                         showStatus('Error processing recording: ' + result.error, 'error');
                         updateStreamStatus('error', 'Processing failed');
                     }
                 };
                 reader.readAsDataURL(wavBlob);
-                
+
             } catch (error) {
                 showStatus('Error processing recording: ' + error.message, 'error');
                 updateStreamStatus('error', 'Connection error');
@@ -651,7 +646,7 @@
             status.textContent = message;
             status.className = `status ${type}`;
             status.classList.remove('hidden');
-            
+
             setTimeout(() => {
                 status.classList.add('hidden');
             }, 5000);
@@ -694,28 +689,28 @@
         function clearFrameBuffer() {
             // Stop any ongoing playback
             stopPlayback();
-            
+
             // Stop MJPEG stream if running
             if (mjpegStream) {
                 mjpegStream.close();
                 mjpegStream = null;
             }
             firstFrameDrawn = false;
-            
+
             // Clear the canvas display
             const canvas = streamVideo;
             const ctx = canvas.getContext('2d');
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             canvas.classList.remove('active');
-            
+
             // Reset frame information
             frameCount.textContent = '0';
             currentFrame.textContent = '-';
             playbackFPS.textContent = '-';
-            
+
             // Update status
             updateStreamStatus('waiting', 'Buffer cleared - ready for MJPEG stream');
-            
+
             // Also clear the backend buffer - use GET method to avoid header conflicts
             fetch('/clear_buffer', { 
                 method: 'GET',
@@ -731,7 +726,7 @@
         function updateStreamStatus(type, message) {
             streamStatus.textContent = message;
             streamStatus.className = `stream-status ${type}`;
-            
+
             if (type === 'streaming') {
                 videoContainer.classList.add('streaming');
                 videoPlaceholder.style.display = 'none';
@@ -741,21 +736,12 @@
             }
         }
 
-        // Utilities
-        function base64JpegToBlob(b64) {
-            const byteStr = atob(b64);
-            const len = byteStr.length;
-            const bytes = new Uint8Array(len);
-            for (let i = 0; i < len; i++) bytes[i] = byteStr.charCodeAt(i);
-            return new Blob([bytes], { type: 'image/jpeg' });
-        }
-
         // MJPEG streaming functions
         function startMjpegStream() {
             if (mjpegStream) {
                 mjpegStream.close();
             }
-            
+
             // Create image element for MJPEG stream
             if (!mjpegImage) {
                 // Use the hidden <img> in DOM so browser decodes the multipart stream
@@ -775,40 +761,64 @@
                     }, 1000);
                 };
             }
-            
+
             // Start MJPEG stream with cache buster to avoid browser caching issues
             const streamUrl = '/mjpeg_stream?' + Date.now();
             console.log('[MJPEG] requesting', streamUrl);
             mjpegImage.src = streamUrl;
-            
+
             updateStreamStatus('streaming', 'MJPEG stream started - buffering frames...');
             console.log('MJPEG stream started');
             firstFrameDrawn = false;
-            // MJPEG render loop will draw frames onto canvas; we also continue buffer polling which can be used for playback
+            // Do NOT start MJPEG render loop; buffered playback will handle drawing
         }
 
-        // Buffer MJPEG frames without drawing them; draw is handled by buffered playback loop
-        function startMjpegBufferingLoop() {
+        function startMjpegRenderLoop() {
             if (mjpegDrawRaf) {
                 cancelAnimationFrame(mjpegDrawRaf);
             }
-            function buffer() {
+            const canvas = streamVideo;
+            const ctx = canvas.getContext('2d');
+            function draw() {
                 if (mjpegImage && mjpegImage.naturalWidth > 0 && mjpegImage.naturalHeight > 0) {
                     const img = mjpegImage;
-                    try {
-                        const off = document.createElement('canvas');
-                        off.width = img.naturalWidth; off.height = img.naturalHeight;
-                        const offCtx = off.getContext('2d');
-                        offCtx.drawImage(img, 0, 0);
-                        const dataUrl = off.toDataURL('image/jpeg');
-                        const b64 = dataUrl.split(',')[1];
-                        frameBuffer.push({ frame_number: frameBuffer.length, frame_data: b64 });
-                        frameCount.textContent = String(frameBuffer.length);
-                    } catch {}
+                    // Calculate scaling to fill entire canvas (cover)
+                    const scale = Math.max(
+                        canvas.width / img.naturalWidth,
+                        canvas.height / img.naturalHeight
+                    );
+                    const scaledWidth = img.naturalWidth * scale;
+                    const scaledHeight = img.naturalHeight * scale;
+                    const x = (canvas.width - scaledWidth) / 2;
+                    const y = (canvas.height - scaledHeight) / 2;
+                    ctx.fillStyle = '#000000';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, x, y, scaledWidth, scaledHeight);
+                    canvas.classList.add('active');
+                    updateStreamStatus('streaming', 'MJPEG stream active');
+
+                    if (!firstFrameDrawn) {
+                        console.log('[MJPEG] first frame drawn at', new Date().toISOString());
+                        try {
+                            if (audioPlayer && audioPlayer.src) {
+                                audioPlayer.currentTime = 0;
+                                const playPromise = audioPlayer.play();
+                                if (playPromise && typeof playPromise.then === 'function') {
+                                    playPromise.catch(err => console.warn('Audio autoplay blocked:', err));
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('Audio start error:', e);
+                        }
+                        firstFrameDrawn = true;
+                    }
+                } else {
+                    // Log readiness state occasionally
+                    // console.log('[MJPEG] waiting for image decode...')
                 }
-                mjpegDrawRaf = requestAnimationFrame(buffer);
+                mjpegDrawRaf = requestAnimationFrame(draw);
             }
-            mjpegDrawRaf = requestAnimationFrame(buffer);
+            mjpegDrawRaf = requestAnimationFrame(draw);
         }
 
         // Buffered frame playback (draw every frame from server buffer)
@@ -822,57 +832,25 @@
             const poll = async () => {
                 if (!bufferPolling) return;
                 try {
-                    // Request frames in chunks to reduce payload size and latency
-                    const res = await fetch(`/get_frame_buffer?from_index=${nextFetchIndex}&limit=20`);
+                    const res = await fetch(`/get_frame_buffer?from_index=${nextFetchIndex}`);
                     const data = await res.json();
                     const newFrames = data.frames || [];
-                    // Push into buffer
-                    for (const f of newFrames) frameBuffer.push(f);
-                    // Opportunistic parallel decode using createImageBitmap when available
-                    try {
-                        const supportBitmap = ('createImageBitmap' in window);
-                        const maxToDecode = Math.min(newFrames.length, 50);
-                        let active = 0;
-                        const toDecode = supportBitmap ? newFrames.slice(0, maxToDecode) : [];
-                        const schedule = () => {
-                            if (!toDecode.length || active >= DECODE_CONCURRENCY) return;
-                            const fr = toDecode.shift();
-                            active += 1;
-                            const blob = base64JpegToBlob(fr.frame_data);
-                            createImageBitmap(blob)
-                                .then(bmp => { fr._bmp = bmp; })
-                                .catch(() => {})
-                                .finally(() => { active -= 1; schedule(); });
-                            schedule();
-                        };
-                        if (supportBitmap) schedule();
-                        // Always set up HTMLImageElement as secondary fallback
-                        for (const f of newFrames) {
-                            if (!f._img) {
-                                const img = new Image();
-                                img.src = `data:image/jpeg;base64,${f.frame_data}`;
-                                f._img = img;
-                            }
-                        }
-                    } catch {}
+                    // Pre-decode images for smoother playback
+                    for (const f of newFrames) {
+                        const img = new Image();
+                        img.src = `data:image/jpeg;base64,${f.frame_data}`;
+                        f._img = img;
+                        frameBuffer.push(f);
+                    }
                     nextFetchIndex = data.next_index || nextFetchIndex;
                     processingCompleteFlag = Boolean(data.processing_complete);
-                    const haveInitialBuffer = Boolean(data.initial_buffer_received);
-                    // Ensure playback loop is running
-                    try { startBufferPlaybackLoop(); } catch {}
-                    // Only mark streaming and enable controls once the initial flush arrived and we have frames
-                    if (haveInitialBuffer && frameBuffer.length > 0) {
-                        try { playButton.disabled = false; pauseButton.disabled = false; } catch {}
-                        try { updateStreamStatus('streaming', 'Playing buffered frames'); } catch {}
-                        try { if (!firstFrameDrawn) drawFirstAvailableFrameOnce(); } catch {}
-                    }
-                    // Reflect server-side buffer size to avoid drift with client-side buffer
-                    frameCount.textContent = String(data.buffer_size ?? frameBuffer.length);
+                    startSignalReceived = Boolean(data.start_signal_received);
+                    frameCount.textContent = String(frameBuffer.length);
                 } catch (e) {
                     console.warn('Buffer poll error', e);
                 } finally {
                     // Fast poll while playing; slow down after complete
-                    const delay = processingCompleteFlag ? 150 : 30;
+                    const delay = processingCompleteFlag ? 250 : 50;
                     if (bufferPolling) setTimeout(poll, delay);
                 }
             };
@@ -892,30 +870,6 @@
             targetFPS = Math.max(1, Math.min(60, targetFPS));
             const frameIntervalMs = 1000 / targetFPS;
             let lastTime = performance.now();
-            let stallStartMs = 0; // skip a frame if it can't decode after brief wait
-
-            function predecodeFrames(startIdx, count) {
-                const end = Math.min(frameBuffer.length, startIdx + count);
-                let active = 0;
-                for (let i = startIdx; i < end; i++) {
-                    const entry = frameBuffer[i];
-                    if (!entry || entry._bmp || (entry._img && entry._img.naturalWidth > 0)) continue;
-                    if ('createImageBitmap' in window) {
-                        if (active >= DECODE_CONCURRENCY) break;
-                        try {
-                            const blob = base64JpegToBlob(entry.frame_data);
-                            active += 1;
-                            createImageBitmap(blob).then(bmp => { entry._bmp = bmp; }).catch(() => {}).finally(() => { active -= 1; });
-                        } catch {}
-                    } else {
-                        try {
-                            const img = new Image();
-                            img.src = `data:image/jpeg;base64,${entry.frame_data}`;
-                            entry._img = img;
-                        } catch {}
-                    }
-                }
-            }
 
             const drawNext = (now) => {
                 const elapsed = now - lastTime;
@@ -924,46 +878,9 @@
                     if (!startSignalReceived) {
                         // Waiting for start signal; do not render yet
                     } else if (currentFrameIndex < frameBuffer.length) {
-                        // Opportunistically predecode a small window ahead of current index
-                        try { predecodeFrames(currentFrameIndex, PREDECODE_AHEAD); } catch {}
                         const entry = frameBuffer[currentFrameIndex];
-                        const bmp = entry._bmp;
-                        let img = entry._img;
-                        // Lazy create image if not present
-                        if (!bmp && !img) {
-                            try {
-                                img = new Image();
-                                img.src = `data:image/jpeg;base64,${entry.frame_data}`;
-                                entry._img = img;
-                            } catch {}
-                        }
-                        if (bmp) {
-                            const scale = Math.max(
-                                canvas.width / bmp.width,
-                                canvas.height / bmp.height
-                            );
-                            const w = bmp.width * scale;
-                            const h = bmp.height * scale;
-                            const x = (canvas.width - w) / 2;
-                            const y = (canvas.height - h) / 2;
-                            ctx.fillStyle = '#000';
-                            ctx.fillRect(0, 0, canvas.width, canvas.height);
-                            ctx.drawImage(bmp, x, y, w, h);
-                            canvas.classList.add('active');
-                            currentFrame.textContent = String(entry.frame_number ?? currentFrameIndex);
-                            playbackFPS.textContent = String(targetFPS);
-                            if (!firstFrameDrawn) {
-                                try {
-                                    if (audioPlayer && audioPlayer.src) {
-                                        audioPlayer.currentTime = 0;
-                                        const p = audioPlayer.play();
-                                        if (p && typeof p.then === 'function') p.catch(() => {});
-                                    }
-                                } catch {}
-                                firstFrameDrawn = true;
-                            }
-                            currentFrameIndex += 1;
-                        } else if (img && img.complete && img.naturalWidth > 0) {
+                        const img = entry._img;
+                        if (img && img.naturalWidth > 0) {
                             const scale = Math.max(
                                 canvas.width / img.naturalWidth,
                                 canvas.height / img.naturalHeight
@@ -990,18 +907,12 @@
                                 firstFrameDrawn = true;
                             }
                             currentFrameIndex += 1;
-                        } else {
-                            // Not yet decodable; if stalled too long, skip this frame to keep motion
-                            const nowMs = now;
-                            if (!stallStartMs) stallStartMs = nowMs;
-                            if (nowMs - stallStartMs > Math.max(150, frameIntervalMs * 2)) {
-                                stallStartMs = 0;
-                                currentFrameIndex += 1;
-                            }
                         }
                     } else {
-                        // If no more frames yet
-                        // Wait for buffer to grow or finish on completion
+                        // If no more frames yet and not complete, wait for buffer to grow
+                        if (processingCompleteFlag) {
+                            // Hold on last frame once complete
+                        }
                     }
                 }
                 bufferPlaybackRaf = requestAnimationFrame(drawNext);
@@ -1009,82 +920,30 @@
             bufferPlaybackRaf = requestAnimationFrame(drawNext);
         }
 
-        // Force draw the earliest decodable frame once when start arrives
-        function drawFirstAvailableFrameOnce() {
-            const canvas = streamVideo;
-            const ctx = canvas.getContext('2d');
-            for (let i = 0; i < frameBuffer.length; i++) {
-                const entry = frameBuffer[i];
-                const bmp = entry._bmp;
-                const img = entry._img;
-                if (bmp) {
-                    const scale = Math.max(canvas.width / bmp.width, canvas.height / bmp.height);
-                    const w = bmp.width * scale, h = bmp.height * scale;
-                    const x = (canvas.width - w) / 2, y = (canvas.height - h) / 2;
-                    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-                    ctx.drawImage(bmp, x, y, w, h);
-                    canvas.classList.add('active');
-                    currentFrame.textContent = String(entry.frame_number ?? i);
-                    // Start audio on first ever drawn frame
-                    try {
-                        if (!firstFrameDrawn && audioPlayer && audioPlayer.src) {
-                            audioPlayer.currentTime = 0;
-                            const p = audioPlayer.play();
-                            if (p && typeof p.then === 'function') p.catch(() => {});
-                        }
-                    } catch {}
-                    firstFrameDrawn = true;
-                    currentFrameIndex = i + 1;
-                    return true;
-                }
-                if (img && img.complete && img.naturalWidth > 0) {
-                    const scale = Math.max(canvas.width / img.naturalWidth, canvas.height / img.naturalHeight);
-                    const w = img.naturalWidth * scale, h = img.naturalHeight * scale;
-                    const x = (canvas.width - w) / 2, y = (canvas.height - h) / 2;
-                    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-                    ctx.drawImage(img, x, y, w, h);
-                    canvas.classList.add('active');
-                    currentFrame.textContent = String(entry.frame_number ?? i);
-                    // Start audio on first ever drawn frame
-                    try {
-                        if (!firstFrameDrawn && audioPlayer && audioPlayer.src) {
-                            audioPlayer.currentTime = 0;
-                            const p = audioPlayer.play();
-                            if (p && typeof p.then === 'function') p.catch(() => {});
-                        }
-                    } catch {}
-                    firstFrameDrawn = true;
-                    currentFrameIndex = i + 1;
-                    return true;
-                }
-            }
-            return false;
-        }
-        
         // Initialize canvas on page load
         function initializeCanvas() {
             const canvas = streamVideo;
             const ctx = canvas.getContext('2d');
             const container = videoContainer;
-            
+
             // Set canvas size to match container
             canvas.width = container.clientWidth;
             canvas.height = container.clientHeight;
             console.log('[Canvas] size set', canvas.width, canvas.height);
-            
+
             // Clear canvas with black background
             ctx.fillStyle = '#000000';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
+
             // Show canvas
             canvas.classList.add('active');
         }
-        
+
         // Initialize canvas when page loads
         window.addEventListener('load', function() {
             initializeCanvas();
         });
-        
+
         // Also initialize on DOMContentLoaded for better reliability
         document.addEventListener('DOMContentLoaded', function() {
             initializeCanvas();
@@ -1092,21 +951,6 @@
             // Start buffered fetching and playback by default
             startBufferPolling();
             startBufferPlaybackLoop();
-
-            // Subscribe to server-sent events for start/finished signals
-            try {
-                const evtSrc = new EventSource('/events');
-                // Keep finished as optional informational event
-                evtSrc.addEventListener('finished', (ev) => {
-                    console.log('[SSE] finished event', ev.data);
-                    processingCompleteFlag = true;
-                });
-                evtSrc.onerror = (e) => {
-                    console.warn('[SSE] error', e);
-                };
-            } catch (e) {
-                console.warn('Failed to initialize SSE', e);
-            }
 
             // Restore MuseTalk URL from localStorage
             const urlInput = document.getElementById('musetalkUrlInput');
@@ -1140,13 +984,13 @@
                 cancelAnimationFrame(mjpegDrawRaf);
                 mjpegDrawRaf = null;
             }
-            
+
             // Clear the canvas
             const canvas = streamVideo;
             const ctx = canvas.getContext('2d');
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             canvas.classList.remove('active');
-            
+
             updateStreamStatus('waiting', 'MJPEG stream stopped');
         }
 
@@ -1157,14 +1001,14 @@
             const sampleRate = buffer.sampleRate;
             const arrayBuffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
             const view = new DataView(arrayBuffer);
-            
+
             // WAV header
             const writeString = (offset, string) => {
                 for (let i = 0; i < string.length; i++) {
                     view.setUint8(offset + i, string.charCodeAt(i));
                 }
             };
-            
+
             writeString(0, 'RIFF');
             view.setUint32(4, 36 + length * numberOfChannels * 2, true);
             writeString(8, 'WAVE');
@@ -1178,7 +1022,7 @@
             view.setUint16(34, 16, true);
             writeString(36, 'data');
             view.setUint32(40, length * numberOfChannels * 2, true);
-            
+
             // Convert float samples to 16-bit PCM
             let offset = 44;
             for (let i = 0; i < length; i++) {
@@ -1188,7 +1032,7 @@
                     offset += 2;
                 }
             }
-            
+
             return new Blob([arrayBuffer], { type: 'audio/wav' });
         }
     </script>
