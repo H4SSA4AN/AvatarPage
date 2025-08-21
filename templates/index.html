@@ -828,26 +828,25 @@
                     for (const f of newFrames) frameBuffer.push(f);
                     // Opportunistic parallel decode using createImageBitmap when available
                     try {
-                        if ('createImageBitmap' in window) {
-                            const maxToDecode = Math.min(newFrames.length, 50);
-                            const tasks = [];
-                            let active = 0;
-                            const toDecode = newFrames.slice(0, maxToDecode);
-                            const schedule = () => {
-                                if (!toDecode.length || active >= DECODE_CONCURRENCY) return;
-                                const fr = toDecode.shift();
-                                active += 1;
-                                const blob = base64JpegToBlob(fr.frame_data);
-                                createImageBitmap(blob)
-                                    .then(bmp => { fr._bmp = bmp; })
-                                    .catch(() => {})
-                                    .finally(() => { active -= 1; schedule(); });
-                                schedule();
-                            };
+                        const supportBitmap = ('createImageBitmap' in window);
+                        const maxToDecode = Math.min(newFrames.length, 50);
+                        let active = 0;
+                        const toDecode = supportBitmap ? newFrames.slice(0, maxToDecode) : [];
+                        const schedule = () => {
+                            if (!toDecode.length || active >= DECODE_CONCURRENCY) return;
+                            const fr = toDecode.shift();
+                            active += 1;
+                            const blob = base64JpegToBlob(fr.frame_data);
+                            createImageBitmap(blob)
+                                .then(bmp => { fr._bmp = bmp; })
+                                .catch(() => {})
+                                .finally(() => { active -= 1; schedule(); });
                             schedule();
-                        } else {
-                            // Fallback to HTMLImageElement decode
-                            for (const f of newFrames) {
+                        };
+                        if (supportBitmap) schedule();
+                        // Always set up HTMLImageElement as secondary fallback
+                        for (const f of newFrames) {
+                            if (!f._img) {
                                 const img = new Image();
                                 img.src = `data:image/jpeg;base64,${f.frame_data}`;
                                 f._img = img;
@@ -929,7 +928,15 @@
                         try { predecodeFrames(currentFrameIndex, PREDECODE_AHEAD); } catch {}
                         const entry = frameBuffer[currentFrameIndex];
                         const bmp = entry._bmp;
-                        const img = entry._img;
+                        let img = entry._img;
+                        // Lazy create image if not present
+                        if (!bmp && !img) {
+                            try {
+                                img = new Image();
+                                img.src = `data:image/jpeg;base64,${entry.frame_data}`;
+                                entry._img = img;
+                            } catch {}
+                        }
                         if (bmp) {
                             const scale = Math.max(
                                 canvas.width / bmp.width,
@@ -956,7 +963,7 @@
                                 firstFrameDrawn = true;
                             }
                             currentFrameIndex += 1;
-                        } else if (img && img.naturalWidth > 0) {
+                        } else if (img && img.complete && img.naturalWidth > 0) {
                             const scale = Math.max(
                                 canvas.width / img.naturalWidth,
                                 canvas.height / img.naturalHeight
