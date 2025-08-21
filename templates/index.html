@@ -465,6 +465,10 @@
                         frameCount.textContent = '0';
                         currentFrame.textContent = '-';
                         playbackFPS.textContent = '-';
+                        // Reset start signal only when starting a new recording
+                        startSignalReceived = false;
+                        playbackStartedBySignal = false;
+                        firstFrameDrawn = false;
                     } catch (e) { /* ignore */ }
                     startTimer();
                     
