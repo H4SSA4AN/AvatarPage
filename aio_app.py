@@ -25,6 +25,9 @@ frame_buffer = []
 processing_complete = False
 start_signal_received = False
 
+# SSE clients (queues per connection)
+sse_queues = []  # type: list
+
 
 # CORS middleware
 @web.middleware
@@ -129,6 +132,14 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
     total_lines = 0
     total_frames_received = 0
 
+    def sse_broadcast_sync(event: str, data: dict):
+        # Non-awaiting broadcast: enqueue to all client queues
+        for q in list(sse_queues):
+            try:
+                q.put_nowait({'event': event, 'data': data})
+            except Exception:
+                pass
+
     def process_line(line: str):
         nonlocal total_lines, total_frames_received
         total_lines += 1
@@ -145,10 +156,21 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
         if status == 'start':
             start_signal_received = True
             print('Start signal received from MuseTalk')
-            print(f'DEBUG: start_signal_received set to {start_signal_received}')
+            try:
+                sse_broadcast_sync('start', {
+                    'timestamp': datetime.now().isoformat()
+                })
+            except Exception:
+                pass
             return
         if status == 'finished':
             processing_complete = True
+            try:
+                sse_broadcast_sync('finished', {
+                    'timestamp': datetime.now().isoformat()
+                })
+            except Exception:
+                pass
             return
 
         frames = msg.get('frames', [])
@@ -327,15 +349,13 @@ async def get_frame_buffer_handler(request: web.Request) -> web.Response:
             else:
                 frames_slice = frame_buffer[:limit]
                 next_index = min(len(frame_buffer), limit)
-        response_data = {
+        return web.json_response({
             'frames': frames_slice,
             'buffer_size': len(frame_buffer),
             'next_index': next_index,
             'processing_complete': processing_complete,
             'start_signal_received': start_signal_received,
-        }
-        print(f'DEBUG: /get_frame_buffer returning start_signal_received={start_signal_received}')
-        return web.json_response(response_data)
+        })
     except Exception as e:
         # Suppress GET logging to reduce console noise
         return web.json_response({'error': str(e)}, status=500)
@@ -401,6 +421,60 @@ async def mjpeg_stream_handler(request: web.Request) -> web.StreamResponse:
     return response
 
 
+async def sse_events_handler(request: web.Request) -> web.StreamResponse:
+    """Server-Sent Events endpoint to push start/finished signals to the web page."""
+    response = web.StreamResponse(
+        status=200,
+        headers={
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+        },
+    )
+    try:
+        await response.prepare(request)
+    except (ConnectionResetError, asyncio.CancelledError):
+        return response
+
+    queue = asyncio.Queue()
+    sse_queues.append(queue)
+
+    # Send initial comment to keep connection open
+    try:
+        await response.write(b": connected\n\n")
+    except Exception:
+        try:
+            sse_queues.remove(queue)
+        except ValueError:
+            pass
+        return response
+
+    try:
+        while True:
+            try:
+                message = await queue.get()
+            except asyncio.CancelledError:
+                break
+            try:
+                event = message.get('event', 'message')
+                data = json.dumps(message.get('data', {}))
+                await response.write(f"event: {event}\n".encode('utf-8'))
+                await response.write(f"data: {data}\n\n".encode('utf-8'))
+                await response.drain()
+            except (ConnectionResetError, asyncio.CancelledError, RuntimeError):
+                break
+    finally:
+        try:
+            sse_queues.remove(queue)
+        except ValueError:
+            pass
+        try:
+            await response.write_eof()
+        except Exception:
+            pass
+    return response
+
+
 def create_app() -> web.Application:
     app = web.Application(client_max_size=MAX_AUDIO_SIZE, middlewares=[cors_middleware])
     app.router.add_get('/', index_handler)
@@ -412,6 +486,7 @@ def create_app() -> web.Application:
     app.router.add_get('/clear_buffer', clear_buffer_handler)
     app.router.add_get('/get_frame_buffer', get_frame_buffer_handler)
     app.router.add_get('/mjpeg_stream', mjpeg_stream_handler)
+    app.router.add_get('/events', sse_events_handler)
     return app
 
 

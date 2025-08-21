@@ -1081,6 +1081,32 @@
             startBufferPolling();
             startBufferPlaybackLoop();
 
+            // Subscribe to server-sent events for start/finished signals
+            try {
+                const evtSrc = new EventSource('/events');
+                evtSrc.addEventListener('start', (ev) => {
+                    console.log('[SSE] start event', ev.data);
+                    const prevStart = startSignalReceived;
+                    startSignalReceived = true;
+                    if (!prevStart && !playbackStartedBySignal) {
+                        playbackStartedBySignal = true;
+                        try { startBufferPlaybackLoop(); } catch {}
+                        try { playButton.disabled = false; pauseButton.disabled = false; } catch {}
+                        try { updateStreamStatus('streaming', 'Start signal received — playing buffered frames'); } catch {}
+                        try { drawFirstAvailableFrameOnce(); } catch {}
+                    }
+                });
+                evtSrc.addEventListener('finished', (ev) => {
+                    console.log('[SSE] finished event', ev.data);
+                    processingCompleteFlag = true;
+                });
+                evtSrc.onerror = (e) => {
+                    console.warn('[SSE] error', e);
+                };
+            } catch (e) {
+                console.warn('Failed to initialize SSE', e);
+            }
+
             // Restore MuseTalk URL from localStorage
             const urlInput = document.getElementById('musetalkUrlInput');
             try {
