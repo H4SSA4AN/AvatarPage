@@ -703,13 +703,24 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             canvas.classList.remove('active');
 
-            // Reset frame information
+            // Reset frame information and state
             frameCount.textContent = '0';
             currentFrame.textContent = '-';
             playbackFPS.textContent = '-';
+            
+            // Reset playback state
+            frameBuffer = [];
+            currentFrameIndex = 0;
+            nextFetchIndex = 0;
+            processingCompleteFlag = false;
+            startSignalReceived = false;
+
+            // Disable playback controls
+            playButton.disabled = true;
+            pauseButton.disabled = true;
 
             // Update status
-            updateStreamStatus('waiting', 'Buffer cleared - ready for MJPEG stream');
+            updateStreamStatus('waiting', 'Buffer cleared - ready for new stream');
 
             // Also clear the backend buffer - use GET method to avoid header conflicts
             fetch('/clear_buffer', { 
@@ -730,9 +741,12 @@
             if (type === 'streaming') {
                 videoContainer.classList.add('streaming');
                 videoPlaceholder.style.display = 'none';
+                // Make sure canvas is visible
+                streamVideo.style.display = 'block';
             } else {
                 videoContainer.classList.remove('streaming');
                 videoPlaceholder.style.display = 'block';
+                streamVideo.style.display = 'none';
             }
         }
 
@@ -829,23 +843,61 @@
             frameBuffer = [];
             currentFrameIndex = 0;
             processingCompleteFlag = false;
+            let initialBufferReceived = false;
+            
             const poll = async () => {
                 if (!bufferPolling) return;
                 try {
                     const res = await fetch(`/get_frame_buffer?from_index=${nextFetchIndex}`);
                     const data = await res.json();
                     const newFrames = data.frames || [];
+                    
                     // Pre-decode images for smoother playback
                     for (const f of newFrames) {
                         const img = new Image();
+                        img.onload = function() {
+                            console.log(`Image loaded: ${img.naturalWidth}x${img.naturalHeight}`);
+                            // Mark the frame as ready
+                            f._imgReady = true;
+                        };
+                        img.onerror = function() {
+                            console.error('Failed to load image:', f.frame_data.substring(0, 50) + '...');
+                            f._imgReady = false;
+                        };
                         img.src = `data:image/jpeg;base64,${f.frame_data}`;
                         f._img = img;
+                        f._imgReady = false; // Will be set to true when onload fires
                         frameBuffer.push(f);
                     }
+                    
                     nextFetchIndex = data.next_index || nextFetchIndex;
                     processingCompleteFlag = Boolean(data.processing_complete);
                     startSignalReceived = Boolean(data.start_signal_received);
                     frameCount.textContent = String(frameBuffer.length);
+                    
+                    // Handle initial buffer reception
+                    if (!initialBufferReceived && frameBuffer.length > 0) {
+                        initialBufferReceived = true;
+                        console.log(`Initial buffer received with ${frameBuffer.length} frames`);
+                        
+                        // Enable playback controls
+                        playButton.disabled = false;
+                        pauseButton.disabled = false;
+                        
+                        // Update status to show frames are ready
+                        updateStreamStatus('streaming', `Initial buffer received: ${frameBuffer.length} frames ready`);
+                        
+                        // Start displaying frames immediately when buffer is received
+                        console.log('Initial buffer received, beginning frame display');
+                        displayFramesFromBuffer();
+                    }
+                    
+                    // Handle additional frames being added to buffer
+                    if (frameBuffer.length > 0 && !firstFrameDrawn && !bufferPlaybackRaf) {
+                        console.log('Additional frames added, beginning frame display');
+                        displayFramesFromBuffer();
+                    }
+                    
                 } catch (e) {
                     console.warn('Buffer poll error', e);
                 } finally {
@@ -870,17 +922,24 @@
             targetFPS = Math.max(1, Math.min(60, targetFPS));
             const frameIntervalMs = 1000 / targetFPS;
             let lastTime = performance.now();
+            let isPlaying = false;
 
             const drawNext = (now) => {
                 const elapsed = now - lastTime;
                 if (elapsed >= frameIntervalMs) {
                     lastTime = now;
-                    if (!startSignalReceived) {
-                        // Waiting for start signal; do not render yet
-                    } else if (currentFrameIndex < frameBuffer.length) {
+                    
+                    // Debug logging
+                    if (currentFrameIndex % 30 === 0) { // Log every 30 frames to avoid spam
+                        console.log(`Render loop: currentFrame=${currentFrameIndex}, bufferSize=${frameBuffer.length}, isPlaying=${isPlaying}`);
+                    }
+                    
+                    if (currentFrameIndex < frameBuffer.length) {
                         const entry = frameBuffer[currentFrameIndex];
                         const img = entry._img;
-                        if (img && img.naturalWidth > 0) {
+                        
+                        // Check if image is loaded and ready
+                        if (img && entry._imgReady && img.complete && img.naturalWidth > 0) {
                             const scale = Math.max(
                                 canvas.width / img.naturalWidth,
                                 canvas.height / img.naturalHeight
@@ -893,8 +952,11 @@
                             ctx.fillRect(0, 0, canvas.width, canvas.height);
                             ctx.drawImage(img, x, y, w, h);
                             canvas.classList.add('active');
+                            canvas.style.display = 'block';
+                            canvas.style.zIndex = '1';
                             currentFrame.textContent = String(entry.frame_number ?? currentFrameIndex);
                             playbackFPS.textContent = String(targetFPS);
+                            
                             // Start audio on first buffer-drawn frame
                             if (!firstFrameDrawn) {
                                 try {
@@ -905,19 +967,61 @@
                                     }
                                 } catch {}
                                 firstFrameDrawn = true;
+                                console.log('First frame drawn from buffer');
                             }
+                            
                             currentFrameIndex += 1;
+                            isPlaying = true;
+                        } else if (img) {
+                            // Image is not ready yet, wait for it to load
+                            console.log(`Waiting for image to load: frame ${currentFrameIndex}`);
+                            // Don't increment currentFrameIndex, try again next frame
                         }
                     } else {
                         // If no more frames yet and not complete, wait for buffer to grow
-                        if (processingCompleteFlag) {
+                        if (processingCompleteFlag && isPlaying) {
                             // Hold on last frame once complete
+                            console.log('Playback complete - holding on last frame');
+                            isPlaying = false;
                         }
                     }
                 }
                 bufferPlaybackRaf = requestAnimationFrame(drawNext);
             };
             bufferPlaybackRaf = requestAnimationFrame(drawNext);
+        }
+
+        // Function to display frames from buffer immediately
+        function displayFramesFromBuffer() {
+            if (frameBuffer.length === 0) {
+                console.log('No frames in buffer to display');
+                return;
+            }
+            
+            console.log(`Displaying ${frameBuffer.length} frames from buffer`);
+            console.log('Frame buffer details:', frameBuffer.map((f, i) => ({
+                index: i,
+                frame_number: f.frame_number,
+                has_img: !!f._img,
+                img_ready: f._imgReady,
+                img_complete: f._img ? f._img.complete : false,
+                img_naturalWidth: f._img ? f._img.naturalWidth : 0
+            })));
+            
+            // Reset frame index to start from beginning
+            currentFrameIndex = 0;
+            
+            // Update status
+            updateStreamStatus('streaming', `Displaying ${frameBuffer.length} frames`);
+            
+            // Enable playback controls
+            playButton.disabled = false;
+            pauseButton.disabled = false;
+            
+            // Start the playback loop if not already running
+            if (!bufferPlaybackRaf) {
+                startBufferPlaybackLoop();
+            }
         }
 
         // Initialize canvas on page load
@@ -935,8 +1039,13 @@
             ctx.fillStyle = '#000000';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Show canvas
+            // Show canvas and ensure it's visible
             canvas.classList.add('active');
+            canvas.style.display = 'block';
+            canvas.style.position = 'absolute';
+            canvas.style.top = '0';
+            canvas.style.left = '0';
+            canvas.style.zIndex = '1';
         }
 
         // Initialize canvas when page loads
@@ -966,16 +1075,92 @@
                 urlInput.addEventListener('change', persist);
                 urlInput.addEventListener('input', persist);
             }
+            
+            // Add debug function to window for testing
+            window.debugDisplayFirstFrame = function() {
+                if (frameBuffer.length > 0) {
+                    const firstFrame = frameBuffer[0];
+                    const canvas = streamVideo;
+                    const ctx = canvas.getContext('2d');
+                    
+                    console.log('Debug: First frame details:', {
+                        frame_number: firstFrame.frame_number,
+                        has_img: !!firstFrame._img,
+                        img_ready: firstFrame._imgReady,
+                        img_complete: firstFrame._img ? firstFrame._img.complete : false,
+                        img_naturalWidth: firstFrame._img ? firstFrame._img.naturalWidth : 0,
+                        img_naturalHeight: firstFrame._img ? firstFrame._img.naturalHeight : 0
+                    });
+                    
+                    if (firstFrame._img && firstFrame._imgReady && firstFrame._img.complete && firstFrame._img.naturalWidth > 0) {
+                        const scale = Math.max(
+                            canvas.width / firstFrame._img.naturalWidth,
+                            canvas.height / firstFrame._img.naturalHeight
+                        );
+                        const w = firstFrame._img.naturalWidth * scale;
+                        const h = firstFrame._img.naturalHeight * scale;
+                        const x = (canvas.width - w) / 2;
+                        const y = (canvas.height - h) / 2;
+                        
+                        ctx.fillStyle = '#000';
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(firstFrame._img, x, y, w, h);
+                        canvas.classList.add('active');
+                        canvas.style.display = 'block';
+                        canvas.style.zIndex = '1';
+                        console.log('Debug: First frame drawn successfully');
+                    } else {
+                        console.log('Debug: First frame image not ready');
+                    }
+                } else {
+                    console.log('Debug: No frames in buffer');
+                }
+            };
+            
+            // Add function to force display frames
+            window.forceDisplayFrames = function() {
+                console.log('Force displaying frames...');
+                if (frameBuffer.length > 0) {
+                    displayFramesFromBuffer();
+                } else {
+                    console.log('No frames to display');
+                }
+            };
+            
+            // Add function to test canvas drawing
+            window.testCanvas = function() {
+                const canvas = streamVideo;
+                const ctx = canvas.getContext('2d');
+                
+                console.log('Testing canvas drawing...');
+                console.log('Canvas size:', canvas.width, 'x', canvas.height);
+                
+                // Draw a red rectangle to test if canvas is working
+                ctx.fillStyle = '#ff0000';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                // Ensure canvas is visible
+                canvas.style.display = 'block';
+                canvas.style.position = 'absolute';
+                canvas.style.top = '0';
+                canvas.style.left = '0';
+                canvas.style.zIndex = '1';
+                
+                console.log('Red rectangle drawn to canvas');
+            };
         });
 
         function startPlayback() {
-            // For MJPEG streaming, playback is handled automatically
-            // This function is kept for compatibility but doesn't do anything
-            console.log('Playback started (MJPEG streaming)');
+            if (frameBuffer.length > 0) {
+                console.log('Starting playback from buffer');
+                displayFramesFromBuffer();
+            } else {
+                console.log('No frames in buffer to play');
+            }
         }
 
         function stopPlayback() {
-            // For MJPEG streaming, stop the stream
+            // Stop MJPEG streaming
             if (mjpegStream) {
                 mjpegStream.close();
                 mjpegStream = null;
@@ -985,13 +1170,19 @@
                 mjpegDrawRaf = null;
             }
 
+            // Stop buffered playback
+            if (bufferPlaybackRaf) {
+                cancelAnimationFrame(bufferPlaybackRaf);
+                bufferPlaybackRaf = null;
+            }
+
             // Clear the canvas
             const canvas = streamVideo;
             const ctx = canvas.getContext('2d');
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             canvas.classList.remove('active');
 
-            updateStreamStatus('waiting', 'MJPEG stream stopped');
+            updateStreamStatus('waiting', 'Playback stopped');
         }
 
         // Convert AudioBuffer to WAV format
