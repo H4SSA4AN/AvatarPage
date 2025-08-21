@@ -485,7 +485,7 @@ def _start_mjpeg_ingest(ingest_url: str) -> None:
 
 
 async def _mjpeg_ingest_worker(ingest_url: str):
-    global frame_buffer
+    global frame_buffer, initial_buffer_received, initial_flush_pending
     timeout = aiohttp.ClientTimeout(total=None)
     try:
         async with ClientSession(timeout=timeout) as session:
@@ -553,7 +553,9 @@ async def _mjpeg_ingest_worker(ingest_url: str):
                         if len(frame_buffer) > MAX_BUFFER_FRAMES:
                             del frame_buffer[: len(frame_buffer) - MAX_BUFFER_FRAMES]
                         if next_frame_number == 0:
-                            print('MJPEG ingest: first frame appended, buffer_size=1')
+                            initial_buffer_received = True
+                            initial_flush_pending = False
+                            print('MJPEG ingest: first frame appended, buffer_size=1 (initial buffer ready)')
                         elif next_frame_number % 30 == 0:
                             print(f"MJPEG ingest: buffer_size={len(frame_buffer)} (last #{next_frame_number})")
                         next_frame_number += 1
