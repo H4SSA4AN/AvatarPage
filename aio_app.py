@@ -219,7 +219,13 @@ async def probe_musetalk_handler(request: web.Request) -> web.Response:
         if not (musetalk_base_url.startswith('http://') or musetalk_base_url.startswith('https://')):
             musetalk_base_url = 'http://' + musetalk_base_url
 
-        url = musetalk_base_url + '/health'
+        # Build health URL and include our public base for stream registration
+        xf_proto = request.headers.get('X-Forwarded-Proto')
+        xf_host = request.headers.get('X-Forwarded-Host')
+        scheme = xf_proto or request.scheme
+        host = xf_host or request.host
+        public_base = f"{scheme}://{host}"
+        url = musetalk_base_url + '/health' + f"?stream_base={public_base}"
 
         # Diagnostics: resolve host and attempt a quick TCP connect
         import socket
