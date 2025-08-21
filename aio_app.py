@@ -8,8 +8,8 @@ import aiohttp
 from aiohttp import web, ClientSession
 
 
-# Logging
-logging.basicConfig(level=logging.INFO)
+# Logging: mute all logs by default; we'll print only when frames arrive
+logging.basicConfig(level=logging.CRITICAL)
 logger = logging.getLogger(__name__)
 
 
@@ -123,7 +123,7 @@ async def save_audio_handler(request: web.Request) -> web.Response:
 async def stream_frames_handler(request: web.Request) -> web.Response:
     """Persistent NDJSON (one JSON object per line) receiver from MuseTalk."""
     global frame_buffer, processing_complete, start_signal_received
-    logger.info('=== stream_frames started ===')
+    # Silent start
 
     buf = b''
     total_lines = 0
@@ -138,17 +138,15 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
         try:
             msg = json.loads(line)
         except json.JSONDecodeError:
-            logger.warning('Non-JSON line received; ignoring')
+            # Ignore non-JSON lines silently
             return
 
         status = msg.get('status')
         if status == 'start':
             start_signal_received = True
-            logger.info('Start signal received')
             return
         if status == 'finished':
             processing_complete = True
-            logger.info('Finished signal received')
             return
 
         frames = msg.get('frames', [])
@@ -167,7 +165,8 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
                 })
                 added += 1
             total_frames_received += added
-            logger.info(f"Received {added} frames (last #{last_num}); buffer size={len(frame_buffer)}; total_frames_received={total_frames_received}")
+            # Only logging kept: frames received summary
+            print(f"Frames received: +{added} (last #{last_num}) | buffer_size={len(frame_buffer)} | total={total_frames_received}")
 
     try:
         async for chunk in request.content.iter_chunked(65536):
@@ -185,13 +184,14 @@ async def stream_frames_handler(request: web.Request) -> web.Response:
         if buf:
             process_line(buf.decode('utf-8', errors='ignore'))
 
-        logger.info(f"=== stream_frames completed: lines={total_lines}, total_frames_received={total_frames_received}, buffer_size={len(frame_buffer)} ===")
+        # Silent completion except a concise summary
+        print(f"Frames received total: {total_frames_received} | lines={total_lines} | buffer_size={len(frame_buffer)}")
         return web.json_response({'ok': True, 'lines': total_lines, 'frames': total_frames_received})
     except Exception as e:
-        logger.exception('stream_frames error')
+        # Silent on errors (only return JSON error)
         return web.json_response({'error': str(e)}, status=500)
     finally:
-        logger.info('=== stream_frames ended ===')
+        pass
 
 
 async def clear_buffer_handler(request: web.Request) -> web.Response:
