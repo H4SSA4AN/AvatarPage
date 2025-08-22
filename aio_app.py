@@ -80,6 +80,7 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         filepath = os.path.join(UPLOAD_FOLDER, 'input.wav')
         with open(filepath, 'wb') as f:
             f.write(audio_bytes)
+        saved_at = datetime.now().isoformat()
 
         # Normalize MuseTalk base URL and build process endpoint
         musetalk_base_url = str(musetalk_base_url).strip()
@@ -113,6 +114,7 @@ async def save_audio_handler(request: web.Request) -> web.Response:
                     'musetalk_response': text,
                     'musetalk_url': musetalk_url,
                     'stream_url': stream_url,
+                    'saved_at': saved_at,
                 }, status=200 if resp.status == 200 else 502)
 
     except Exception as e:
