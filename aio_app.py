@@ -67,6 +67,7 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         fps = str(data.get('fps', '25'))
         batch_size = str(data.get('batch_size', '20'))
         musetalk_base_url = data.get('musetalk_url') or os.getenv('MUSETALK_URL', 'http://localhost:8085')
+        mode = (data.get('mode') or 'pipeline').strip().lower()
 
         if not audio_data:
             return web.json_response({'error': 'No audio data received'}, status=400)
@@ -87,50 +88,127 @@ async def save_audio_handler(request: web.Request) -> web.Response:
             f.write(audio_bytes)
         saved_at = datetime.now().isoformat()
 
-        # === Bridge: STT -> Chat -> TTS (answer.mp3) ===
+        # === Mode selection ===
         openai_api_key = os.getenv('OPENAI_API_KEY')
         if not openai_api_key:
             return web.json_response({'error': 'OPENAI_API_KEY not set on server'}, status=500)
-
         client = OpenAI(api_key=openai_api_key)
 
-        def _transcribe(path: str) -> str:
-            with open(path, 'rb') as af:
-                resp = client.audio.transcriptions.create(
-                    model=os.getenv('TRANSCRIBE_MODEL', 'whisper-1'),
-                    file=af,
-                )
-            return getattr(resp, 'text', None) or str(resp)
-
-        def _chat(question_text: str) -> str:
-            resp = client.chat.completions.create(
-                model=os.getenv('CHAT_MODEL', 'gpt-4o-mini'),
-                messages=[
-                    {"role": "system", "content": os.getenv('SYSTEM_PROMPT', 'You are a concise, helpful assistant.')},
-                    {"role": "user", "content": question_text},
-                ],
-                temperature=0.7,
-            )
-            return resp.choices[0].message.content
-
         answer_mp3_path = os.path.join(UPLOAD_FOLDER, 'answer.mp3')
+        transcript_text = ''
+        answer_text = ''
 
-        def _tts_to_mp3(text: str, out_path: str) -> None:
-            voice = os.getenv('TTS_VOICE', 'alloy')
-            model = os.getenv('TTS_MODEL', 'tts-1')
-            # Stream to MP3 file (SDK defaults to audio/mpeg)
-            with client.audio.speech.with_streaming_response.create(
-                model=model,
-                voice=voice,
-                input=text,
-            ) as resp:
-                resp.stream_to_file(out_path)
+        if mode == 'pipeline':
+            def _transcribe(path: str) -> str:
+                with open(path, 'rb') as af:
+                    resp = client.audio.transcriptions.create(
+                        model=os.getenv('TRANSCRIBE_MODEL', 'whisper-1'),
+                        file=af,
+                    )
+                return getattr(resp, 'text', None) or str(resp)
 
-        # Offload blocking SDK calls to thread pool
-        transcript_text = await asyncio.to_thread(_transcribe, filepath)
-        answer_text = await asyncio.to_thread(_chat, transcript_text)
-        await asyncio.to_thread(_tts_to_mp3, answer_text, answer_mp3_path)
-        answer_saved_at = datetime.now().isoformat()
+            def _chat(question_text: str) -> str:
+                resp = client.chat.completions.create(
+                    model=os.getenv('CHAT_MODEL', 'gpt-4o-mini'),
+                    messages=[
+                        {"role": "system", "content": os.getenv('SYSTEM_PROMPT', 'You are a concise, helpful assistant.')},
+                        {"role": "user", "content": question_text},
+                    ],
+                    temperature=0.7,
+                )
+                return resp.choices[0].message.content
+
+            def _tts_to_mp3(text: str, out_path: str) -> None:
+                voice = os.getenv('TTS_VOICE', 'alloy')
+                model = os.getenv('TTS_MODEL', 'tts-1')
+                with client.audio.speech.with_streaming_response.create(
+                    model=model,
+                    voice=voice,
+                    input=text,
+                ) as resp:
+                    resp.stream_to_file(out_path)
+
+            transcript_text = await asyncio.to_thread(_transcribe, filepath)
+            answer_text = await asyncio.to_thread(_chat, transcript_text)
+            await asyncio.to_thread(_tts_to_mp3, answer_text, answer_mp3_path)
+            answer_saved_at = datetime.now().isoformat()
+        else:
+            # realtime: use one-shot audio->audio to get direct answer audio; also request a brief text summary
+            # Note: using Responses API compatible call via python SDK
+            # Attach input audio and request audio output
+            try:
+                from openai import OpenAI as _Client
+                _c = client
+                with open(filepath, 'rb') as af:
+                    audio_bytes = af.read()
+                # Build input as base64 data URL for audio
+                b64 = base64.b64encode(audio_bytes).decode('ascii')
+                data_url = f"data:audio/wav;base64,{b64}"
+                # Ask the model to produce audio (mp3) and a short text answer
+                result = _c.responses.create(
+                    model=os.getenv('REALTIME_MODEL', 'gpt-4o-mini-tts'),
+                    input=[
+                        {"role": "user", "content": [
+                            {"type": "input_text", "text": os.getenv('SYSTEM_PROMPT', 'You are a concise, helpful assistant. Please respond to the user audio.')},
+                            {"type": "input_audio", "audio": {"data": data_url}},
+                        ]}
+                    ],
+                    modalities=["text", "audio"],
+                    audio={"voice": os.getenv('TTS_VOICE', 'alloy'), "format": "mp3"}
+                )
+                # Extract audio and text from response
+                audio_parts = []
+                text_parts = []
+                for out in getattr(result, 'output', []) or []:
+                    if getattr(out, 'type', '') == 'output_audio':
+                        # base64-encoded audio
+                        enc = getattr(out, 'audio', {}).get('data') if hasattr(out, 'audio') else None
+                        if enc:
+                            audio_parts.append(enc)
+                    elif getattr(out, 'type', '') == 'output_text':
+                        text_parts.append(getattr(out, 'content', ''))
+                if audio_parts:
+                    mp3_bytes = base64.b64decode(''.join(audio_parts))
+                    with open(answer_mp3_path, 'wb') as outf:
+                        outf.write(mp3_bytes)
+                    answer_saved_at = datetime.now().isoformat()
+                else:
+                    answer_saved_at = datetime.now().isoformat()
+                answer_text = ' '.join([t for t in text_parts if t])
+                transcript_text = ''
+            except Exception as e:
+                logger.exception('realtime mode failed; falling back to pipeline')
+                # fallback to pipeline if realtime not available
+                def _transcribe(path: str) -> str:
+                    with open(path, 'rb') as af:
+                        resp = client.audio.transcriptions.create(
+                            model=os.getenv('TRANSCRIBE_MODEL', 'whisper-1'),
+                            file=af,
+                        )
+                    return getattr(resp, 'text', None) or str(resp)
+                def _chat(question_text: str) -> str:
+                    resp = client.chat.completions.create(
+                        model=os.getenv('CHAT_MODEL', 'gpt-4o-mini'),
+                        messages=[
+                            {"role": "system", "content": os.getenv('SYSTEM_PROMPT', 'You are a concise, helpful assistant.')},
+                            {"role": "user", "content": question_text},
+                        ],
+                        temperature=0.7,
+                    )
+                    return resp.choices[0].message.content
+                def _tts_to_mp3(text: str, out_path: str) -> None:
+                    voice = os.getenv('TTS_VOICE', 'alloy')
+                    model = os.getenv('TTS_MODEL', 'tts-1')
+                    with client.audio.speech.with_streaming_response.create(
+                        model=model,
+                        voice=voice,
+                        input=text,
+                    ) as resp:
+                        resp.stream_to_file(out_path)
+                transcript_text = await asyncio.to_thread(_transcribe, filepath)
+                answer_text = await asyncio.to_thread(_chat, transcript_text)
+                await asyncio.to_thread(_tts_to_mp3, answer_text, answer_mp3_path)
+                answer_saved_at = datetime.now().isoformat()
 
         # Normalize MuseTalk base URL and build process endpoint
         musetalk_base_url = str(musetalk_base_url).strip()
