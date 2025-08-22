@@ -676,10 +676,10 @@
                     if (result.success) {
                         showStatus('Recording saved and sent to MuseTalk for processing', 'success');
 
-                        // T2: Audio saved (from backend)
+                        // T2: Answer audio saved (from backend)
                         try {
-                            if (result.saved_at) {
-                                t2SavedMs = Date.parse(result.saved_at);
+                            if (result.answer_saved_at) {
+                                t2SavedMs = Date.parse(result.answer_saved_at);
                             } else {
                                 t2SavedMs = Date.now();
                             }
@@ -689,6 +689,15 @@
                         // Clear current buffer and stop playback
                         clearFrameBuffer();
                         stopPlayback();
+
+                        // If backend provided the synthesized answer URL, load it for playback
+                        try {
+                            if (result.answer_audio_url) {
+                                // Cache-bust to ensure fresh file
+                                audioPlayer.src = result.answer_audio_url + '?' + Date.now();
+                                audioPlayer.classList.remove('hidden');
+                            }
+                        } catch (e) { /* ignore */ }
 
                         // Reset button states
                         playButton.disabled = true;

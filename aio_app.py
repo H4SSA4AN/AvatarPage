@@ -6,6 +6,8 @@ from datetime import datetime
 import logging
 import aiohttp
 from aiohttp import web, ClientSession
+from openai import OpenAI
+from dotenv import load_dotenv
 
 
 # Logging
@@ -24,6 +26,9 @@ MAX_AUDIO_SIZE = 100 * 1024 * 1024  # 100MB
 frame_buffer = []
 processing_complete = False
 start_signal_received = False
+
+# Load environment variables from .env (if present)
+load_dotenv()
 
 
 # CORS middleware
@@ -61,7 +66,7 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         audio_data = data.get('audio_data')
         fps = str(data.get('fps', '25'))
         batch_size = str(data.get('batch_size', '20'))
-        musetalk_base_url = data.get('musetalk_url') or os.environ.get('MUSETALK_URL', 'http://localhost:8085')
+        musetalk_base_url = data.get('musetalk_url') or os.getenv('MUSETALK_URL', 'http://localhost:8085')
 
         if not audio_data:
             return web.json_response({'error': 'No audio data received'}, status=400)
@@ -82,6 +87,51 @@ async def save_audio_handler(request: web.Request) -> web.Response:
             f.write(audio_bytes)
         saved_at = datetime.now().isoformat()
 
+        # === Bridge: STT -> Chat -> TTS (answer.mp3) ===
+        openai_api_key = os.getenv('OPENAI_API_KEY')
+        if not openai_api_key:
+            return web.json_response({'error': 'OPENAI_API_KEY not set on server'}, status=500)
+
+        client = OpenAI(api_key=openai_api_key)
+
+        def _transcribe(path: str) -> str:
+            with open(path, 'rb') as af:
+                resp = client.audio.transcriptions.create(
+                    model=os.getenv('TRANSCRIBE_MODEL', 'whisper-1'),
+                    file=af,
+                )
+            return getattr(resp, 'text', None) or str(resp)
+
+        def _chat(question_text: str) -> str:
+            resp = client.chat.completions.create(
+                model=os.getenv('CHAT_MODEL', 'gpt-4o-mini'),
+                messages=[
+                    {"role": "system", "content": os.getenv('SYSTEM_PROMPT', 'You are a concise, helpful assistant.')},
+                    {"role": "user", "content": question_text},
+                ],
+                temperature=0.7,
+            )
+            return resp.choices[0].message.content
+
+        answer_mp3_path = os.path.join(UPLOAD_FOLDER, 'answer.mp3')
+
+        def _tts_to_mp3(text: str, out_path: str) -> None:
+            voice = os.getenv('TTS_VOICE', 'alloy')
+            model = os.getenv('TTS_MODEL', 'tts-1')
+            # Stream to MP3 file (SDK defaults to audio/mpeg)
+            with client.audio.speech.with_streaming_response.create(
+                model=model,
+                voice=voice,
+                input=text,
+            ) as resp:
+                resp.stream_to_file(out_path)
+
+        # Offload blocking SDK calls to thread pool
+        transcript_text = await asyncio.to_thread(_transcribe, filepath)
+        answer_text = await asyncio.to_thread(_chat, transcript_text)
+        await asyncio.to_thread(_tts_to_mp3, answer_text, answer_mp3_path)
+        answer_saved_at = datetime.now().isoformat()
+
         # Normalize MuseTalk base URL and build process endpoint
         musetalk_base_url = str(musetalk_base_url).strip()
         if musetalk_base_url.endswith('/'):
@@ -98,23 +148,29 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         stream_url = f"{scheme}://{host}/stream_frames"
 
         form = aiohttp.FormData()
-        form.add_field('audio', open(filepath, 'rb'), filename='input.wav', content_type='audio/wav')
+        # Send synthesized answer MP3 to MuseTalk
+        form.add_field('audio', open(answer_mp3_path, 'rb'), filename='answer.mp3', content_type='audio/mpeg')
         form.add_field('stream_url', stream_url)
         form.add_field('fps', fps)
         form.add_field('batch_size', batch_size)
         form.add_field('bbox_shift', '0')
 
-        timeout = aiohttp.ClientTimeout(total=60)
+        timeout = aiohttp.ClientTimeout(total=120)
         async with ClientSession(timeout=timeout) as session:
             async with session.post(musetalk_url, data=form) as resp:
                 text = await resp.text()
                 return web.json_response({
                     'success': resp.status == 200,
-                    'message': 'Audio forwarded to MuseTalk',
+                    'message': 'Answer audio forwarded to MuseTalk',
                     'musetalk_response': text,
                     'musetalk_url': musetalk_url,
                     'stream_url': stream_url,
                     'saved_at': saved_at,
+                    'transcript': transcript_text,
+                    'answer': answer_text,
+                    'answer_audio_path': answer_mp3_path,
+                    'answer_saved_at': answer_saved_at,
+                    'answer_audio_url': f"{scheme}://{host}/uploads/answer.mp3",
                 }, status=200 if resp.status == 200 else 502)
 
     except Exception as e:
@@ -393,6 +449,8 @@ def create_app() -> web.Application:
     app.router.add_get('/clear_buffer', clear_buffer_handler)
     app.router.add_get('/get_frame_buffer', get_frame_buffer_handler)
     app.router.add_get('/mjpeg_stream', mjpeg_stream_handler)
+    # Serve uploads statically so the page can play answer.mp3
+    app.router.add_static('/uploads/', path=UPLOAD_FOLDER, name='uploads')
     return app
 
 
