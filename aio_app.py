@@ -532,6 +532,26 @@ def create_app() -> web.Application:
     return app
 
 
-if __name__ == '__main__':
+async def main() -> None:
     app = create_app()
-    web.run_app(app, host='0.0.0.0', port=5000)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    host = os.getenv('HOST', '0.0.0.0')
+    port = int(os.getenv('PORT', '5000'))
+    site = web.TCPSite(runner, host=host, port=port)
+    try:
+        await site.start()
+        logger.info(f"Server started on http://{host}:{port}")
+        # Wait until cancelled/terminated; cleanup in finally ensures port closes
+        await asyncio.Event().wait()
+    finally:
+        logger.info('Shutting down server and closing port...')
+        await runner.cleanup()
+        logger.info('Server shutdown complete.')
+
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info('Interrupted by user; exiting.')
