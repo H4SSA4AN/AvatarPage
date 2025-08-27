@@ -97,6 +97,8 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         answer_mp3_path = os.path.join(UPLOAD_FOLDER, 'answer.mp3')
         transcript_text = ''
         answer_text = ''
+        answer_filename = 'answer.mp3'
+        answer_content_type = 'audio/mpeg'
 
         if mode == 'pipeline':
             def _transcribe(path: str) -> str:
@@ -132,7 +134,9 @@ async def save_audio_handler(request: web.Request) -> web.Response:
             answer_text = await asyncio.to_thread(_chat, transcript_text)
             await asyncio.to_thread(_tts_to_mp3, answer_text, answer_mp3_path)
             answer_saved_at = datetime.now().isoformat()
-        else:
+            answer_filename = 'answer.mp3'
+            answer_content_type = 'audio/mpeg'
+        elif mode == 'realtime':
             # realtime: use one-shot audio->audio to get direct answer audio; also request a brief text summary
             # Note: using Responses API compatible call via python SDK
             # Attach input audio and request audio output
@@ -176,6 +180,8 @@ async def save_audio_handler(request: web.Request) -> web.Response:
                     answer_saved_at = datetime.now().isoformat()
                 answer_text = ' '.join([t for t in text_parts if t])
                 transcript_text = ''
+                answer_filename = 'answer.mp3'
+                answer_content_type = 'audio/mpeg'
             except Exception as e:
                 logger.exception('realtime mode failed; falling back to pipeline')
                 # fallback to pipeline if realtime not available
@@ -209,6 +215,40 @@ async def save_audio_handler(request: web.Request) -> web.Response:
                 answer_text = await asyncio.to_thread(_chat, transcript_text)
                 await asyncio.to_thread(_tts_to_mp3, answer_text, answer_mp3_path)
                 answer_saved_at = datetime.now().isoformat()
+                answer_filename = 'answer.mp3'
+                answer_content_type = 'audio/mpeg'
+        elif mode == 'user_audio':
+            # Convert the recorded WAV to MP3 using ffmpeg if available; otherwise fall back to WAV
+            import subprocess
+            ffmpeg_bin = os.getenv('FFMPEG_PATH', 'ffmpeg')
+            try:
+                # Ensure any existing file is removed
+                try:
+                    os.remove(answer_mp3_path)
+                except FileNotFoundError:
+                    pass
+                # Run ffmpeg conversion
+                cmd = [ffmpeg_bin, '-y', '-i', filepath, '-codec:a', 'libmp3lame', '-q:a', '2', answer_mp3_path]
+                result = await asyncio.to_thread(lambda: subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+                if result.returncode == 0 and os.path.exists(answer_mp3_path):
+                    answer_saved_at = datetime.now().isoformat()
+                    answer_filename = 'answer.mp3'
+                    answer_content_type = 'audio/mpeg'
+                    logger.info('User audio converted to MP3 via ffmpeg')
+                else:
+                    raise RuntimeError(f"ffmpeg failed: rc={result.returncode}, stderr={result.stderr[-400:]}" )
+            except Exception as conv_err:
+                logger.warning(f'FFmpeg conversion failed, sending WAV instead: {conv_err}')
+                # Fall back to WAV: use input.wav as the audio to send
+                answer_mp3_path = filepath
+                answer_filename = 'input.wav'
+                answer_content_type = 'audio/wav'
+                answer_saved_at = datetime.now().isoformat()
+            # No transcript or assistant answer for user_audio mode
+            transcript_text = ''
+            answer_text = ''
+        else:
+            return web.json_response({'error': f"Unknown mode '{mode}'"}, status=400)
 
         # Normalize MuseTalk base URL and build process endpoint
         musetalk_base_url = str(musetalk_base_url).strip()
@@ -226,8 +266,8 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         stream_url = f"{scheme}://{host}/stream_frames"
 
         form = aiohttp.FormData()
-        # Send synthesized answer MP3 to MuseTalk
-        form.add_field('audio', open(answer_mp3_path, 'rb'), filename='answer.mp3', content_type='audio/mpeg')
+        # Send audio to MuseTalk
+        form.add_field('audio', open(answer_mp3_path, 'rb'), filename=answer_filename, content_type=answer_content_type)
         form.add_field('stream_url', stream_url)
         form.add_field('fps', fps)
         form.add_field('batch_size', batch_size)
@@ -248,7 +288,7 @@ async def save_audio_handler(request: web.Request) -> web.Response:
                     'answer': answer_text,
                     'answer_audio_path': answer_mp3_path,
                     'answer_saved_at': answer_saved_at,
-                    'answer_audio_url': f"{scheme}://{host}/uploads/answer.mp3",
+                    'answer_audio_url': f"{scheme}://{host}/uploads/{answer_filename}",
                 }, status=200 if resp.status == 200 else 502)
 
     except Exception as e:
