@@ -21,6 +21,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Config
 MAX_AUDIO_SIZE = 100 * 1024 * 1024  # 100MB
+MUSETALK_URL = os.getenv('MUSETALK_URL', 'http://localhost:8085')
 
 # State
 frame_buffer = []
@@ -66,7 +67,7 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         audio_data = data.get('audio_data')
         fps = str(data.get('fps', '25'))
         batch_size = str(data.get('batch_size', '20'))
-        musetalk_base_url = data.get('musetalk_url') or os.getenv('MUSETALK_URL', 'http://localhost:8085')
+        musetalk_base_url = MUSETALK_URL
         mode = (data.get('mode') or 'pipeline').strip().lower()
 
         if not audio_data:
@@ -281,7 +282,6 @@ async def save_audio_handler(request: web.Request) -> web.Response:
                     'success': resp.status == 200,
                     'message': 'Answer audio forwarded to MuseTalk',
                     'musetalk_response': text,
-                    'musetalk_url': musetalk_url,
                     'stream_url': stream_url,
                     'saved_at': saved_at,
                     'transcript': transcript_text,
@@ -384,10 +384,7 @@ async def options_handler(request: web.Request) -> web.Response:
 
 async def probe_musetalk_handler(request: web.Request) -> web.Response:
     try:
-        data = await request.json()
-        musetalk_base_url = data.get('musetalk_url')
-        if not musetalk_base_url:
-            return web.json_response({'success': False, 'error': 'musetalk_url missing'}, status=400)
+        musetalk_base_url = MUSETALK_URL
 
         musetalk_base_url = str(musetalk_base_url).strip()
         if musetalk_base_url.endswith('/'):
