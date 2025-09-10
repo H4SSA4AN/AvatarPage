@@ -320,6 +320,9 @@
         <!-- Left Panel - Audio Recording -->
         <div class="panel">
             <h1>Audio Recording</h1>
+            <div style="margin-top:8px; margin-bottom:16px; text-align:left; font-size: 0.95em; color:#555;">
+                <strong>MuseTalk URL:</strong> <span id="musetalkUrl">(loading...)</span>
+            </div>
 
             <div class="recorder-section">
                 <div class="timer" id="timer">00:00</div>
@@ -1130,6 +1133,19 @@
             // Start buffered fetching and playback by default
             startBufferPolling();
             startBufferPlaybackLoop();
+
+            // Fetch and display backend configuration
+            fetch('/config').then(r => r.json()).then(cfg => {
+                try {
+                    const el = document.getElementById('musetalkUrl');
+                    if (el) el.textContent = cfg.musetalk_url || '(not set)';
+                } catch {}
+            }).catch(() => {
+                try {
+                    const el = document.getElementById('musetalkUrl');
+                    if (el) el.textContent = '(error loading)';
+                } catch {}
+            });
 
 
             

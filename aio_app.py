@@ -10,6 +10,10 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 
+# Load environment variables from .env (if present) before reading any env vars
+load_dotenv()
+
+
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,10 +31,6 @@ MUSETALK_URL = os.getenv('MUSETALK_URL', 'http://localhost:8085')
 frame_buffer = []
 processing_complete = False
 start_signal_received = False
-
-# Load environment variables from .env (if present)
-load_dotenv()
-
 
 # CORS middleware
 @web.middleware
@@ -382,6 +382,15 @@ async def options_handler(request: web.Request) -> web.Response:
     return web.Response(status=200)
 
 
+async def config_handler(request: web.Request) -> web.Response:
+    try:
+        return web.json_response({
+            'musetalk_url': MUSETALK_URL,
+        })
+    except Exception as e:
+        logger.exception('config_handler error')
+        return web.json_response({'error': str(e)}, status=500)
+
 async def probe_musetalk_handler(request: web.Request) -> web.Response:
     try:
         musetalk_base_url = MUSETALK_URL
@@ -561,6 +570,7 @@ def create_app() -> web.Application:
     app.router.add_post('/save_audio', save_audio_handler)
     app.router.add_post('/stream_frames', stream_frames_handler)
     app.router.add_post('/probe_musetalk', probe_musetalk_handler)
+    app.router.add_get('/config', config_handler)
     app.router.add_get('/clear_buffer', clear_buffer_handler)
     app.router.add_get('/get_frame_buffer', get_frame_buffer_handler)
     app.router.add_get('/mjpeg_stream', mjpeg_stream_handler)
