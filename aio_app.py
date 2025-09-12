@@ -6,6 +6,12 @@ from datetime import datetime
 import logging
 import aiohttp
 from aiohttp import web, ClientSession
+from openai import OpenAI
+from dotenv import load_dotenv
+
+
+# Load environment variables from .env (if present) before reading any env vars
+load_dotenv()
 
 
 # Logging
@@ -19,12 +25,12 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Config
 MAX_AUDIO_SIZE = 100 * 1024 * 1024  # 100MB
+MUSETALK_URL = os.getenv('MUSETALK_URL', 'http://localhost:8085')
 
 # State
 frame_buffer = []
 processing_complete = False
 start_signal_received = False
-
 
 # CORS middleware
 @web.middleware
@@ -61,7 +67,8 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         audio_data = data.get('audio_data')
         fps = str(data.get('fps', '25'))
         batch_size = str(data.get('batch_size', '20'))
-        musetalk_base_url = data.get('musetalk_url') or os.environ.get('MUSETALK_URL', 'http://localhost:8085')
+        musetalk_base_url = MUSETALK_URL
+        mode = (data.get('mode') or 'pipeline').strip().lower()
 
         if not audio_data:
             return web.json_response({'error': 'No audio data received'}, status=400)
@@ -80,6 +87,169 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         filepath = os.path.join(UPLOAD_FOLDER, 'input.wav')
         with open(filepath, 'wb') as f:
             f.write(audio_bytes)
+        saved_at = datetime.now().isoformat()
+
+        # === Mode selection ===
+        openai_api_key = os.getenv('OPENAI_API_KEY')
+        if not openai_api_key:
+            return web.json_response({'error': 'OPENAI_API_KEY not set on server'}, status=500)
+        client = OpenAI(api_key=openai_api_key)
+
+        answer_mp3_path = os.path.join(UPLOAD_FOLDER, 'answer.mp3')
+        transcript_text = ''
+        answer_text = ''
+        answer_filename = 'answer.mp3'
+        answer_content_type = 'audio/mpeg'
+
+        if mode == 'pipeline':
+            def _transcribe(path: str) -> str:
+                with open(path, 'rb') as af:
+                    resp = client.audio.transcriptions.create(
+                        model=os.getenv('TRANSCRIBE_MODEL', 'whisper-1'),
+                        file=af,
+                    )
+                return getattr(resp, 'text', None) or str(resp)
+
+            def _chat(question_text: str) -> str:
+                resp = client.chat.completions.create(
+                    model=os.getenv('CHAT_MODEL', 'gpt-4o-mini'),
+                    messages=[
+                        {"role": "system", "content": os.getenv('SYSTEM_PROMPT', 'You are a concise, helpful assistant.')},
+                        {"role": "user", "content": question_text},
+                    ],
+                    temperature=0.7,
+                )
+                return resp.choices[0].message.content
+
+            def _tts_to_mp3(text: str, out_path: str) -> None:
+                voice = os.getenv('TTS_VOICE', 'alloy')
+                model = os.getenv('TTS_MODEL', 'tts-1')
+                with client.audio.speech.with_streaming_response.create(
+                    model=model,
+                    voice=voice,
+                    input=text,
+                ) as resp:
+                    resp.stream_to_file(out_path)
+
+            transcript_text = await asyncio.to_thread(_transcribe, filepath)
+            answer_text = await asyncio.to_thread(_chat, transcript_text)
+            await asyncio.to_thread(_tts_to_mp3, answer_text, answer_mp3_path)
+            answer_saved_at = datetime.now().isoformat()
+            answer_filename = 'answer.mp3'
+            answer_content_type = 'audio/mpeg'
+        elif mode == 'realtime':
+            # realtime: use one-shot audio->audio to get direct answer audio; also request a brief text summary
+            # Note: using Responses API compatible call via python SDK
+            # Attach input audio and request audio output
+            try:
+                from openai import OpenAI as _Client
+                _c = client
+                with open(filepath, 'rb') as af:
+                    audio_bytes = af.read()
+                # Build input as base64 data URL for audio
+                b64 = base64.b64encode(audio_bytes).decode('ascii')
+                data_url = f"data:audio/wav;base64,{b64}"
+                # Ask the model to produce audio (mp3) and a short text answer
+                result = _c.responses.create(
+                    model=os.getenv('REALTIME_MODEL', 'gpt-4o-mini-tts'),
+                    input=[
+                        {"role": "user", "content": [
+                            {"type": "input_text", "text": os.getenv('SYSTEM_PROMPT', 'You are a concise, helpful assistant. Please respond to the user audio.')},
+                            {"type": "input_audio", "audio": {"data": data_url}},
+                        ]}
+                    ],
+                    modalities=["text", "audio"],
+                    audio={"voice": os.getenv('TTS_VOICE', 'alloy'), "format": "mp3"}
+                )
+                # Extract audio and text from response
+                audio_parts = []
+                text_parts = []
+                for out in getattr(result, 'output', []) or []:
+                    if getattr(out, 'type', '') == 'output_audio':
+                        # base64-encoded audio
+                        enc = getattr(out, 'audio', {}).get('data') if hasattr(out, 'audio') else None
+                        if enc:
+                            audio_parts.append(enc)
+                    elif getattr(out, 'type', '') == 'output_text':
+                        text_parts.append(getattr(out, 'content', ''))
+                if audio_parts:
+                    mp3_bytes = base64.b64decode(''.join(audio_parts))
+                    with open(answer_mp3_path, 'wb') as outf:
+                        outf.write(mp3_bytes)
+                    answer_saved_at = datetime.now().isoformat()
+                else:
+                    answer_saved_at = datetime.now().isoformat()
+                answer_text = ' '.join([t for t in text_parts if t])
+                transcript_text = ''
+                answer_filename = 'answer.mp3'
+                answer_content_type = 'audio/mpeg'
+            except Exception as e:
+                logger.exception('realtime mode failed; falling back to pipeline')
+                # fallback to pipeline if realtime not available
+                def _transcribe(path: str) -> str:
+                    with open(path, 'rb') as af:
+                        resp = client.audio.transcriptions.create(
+                            model=os.getenv('TRANSCRIBE_MODEL', 'whisper-1'),
+                            file=af,
+                        )
+                    return getattr(resp, 'text', None) or str(resp)
+                def _chat(question_text: str) -> str:
+                    resp = client.chat.completions.create(
+                        model=os.getenv('CHAT_MODEL', 'gpt-4o-mini'),
+                        messages=[
+                            {"role": "system", "content": os.getenv('SYSTEM_PROMPT', 'You are a concise, helpful assistant.')},
+                            {"role": "user", "content": question_text},
+                        ],
+                        temperature=0.7,
+                    )
+                    return resp.choices[0].message.content
+                def _tts_to_mp3(text: str, out_path: str) -> None:
+                    voice = os.getenv('TTS_VOICE', 'alloy')
+                    model = os.getenv('TTS_MODEL', 'tts-1')
+                    with client.audio.speech.with_streaming_response.create(
+                        model=model,
+                        voice=voice,
+                        input=text,
+                    ) as resp:
+                        resp.stream_to_file(out_path)
+                transcript_text = await asyncio.to_thread(_transcribe, filepath)
+                answer_text = await asyncio.to_thread(_chat, transcript_text)
+                await asyncio.to_thread(_tts_to_mp3, answer_text, answer_mp3_path)
+                answer_saved_at = datetime.now().isoformat()
+                answer_filename = 'answer.mp3'
+                answer_content_type = 'audio/mpeg'
+        elif mode == 'user_audio':
+            # Convert the recorded WAV to MP3 using ffmpeg if available; otherwise fall back to WAV
+            import subprocess
+            ffmpeg_bin = os.getenv('FFMPEG_PATH', 'ffmpeg')
+            try:
+                # Ensure any existing file is removed
+                try:
+                    os.remove(answer_mp3_path)
+                except FileNotFoundError:
+                    pass
+                # Run ffmpeg conversion
+                cmd = [ffmpeg_bin, '-y', '-i', filepath, '-codec:a', 'libmp3lame', '-q:a', '2', answer_mp3_path]
+                result = await asyncio.to_thread(lambda: subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+                if result.returncode == 0 and os.path.exists(answer_mp3_path):
+                    answer_saved_at = datetime.now().isoformat()
+                    answer_filename = 'answer.mp3'
+                    answer_content_type = 'audio/mpeg'
+                    logger.info('User audio converted to MP3 via ffmpeg')
+                else:
+                    raise RuntimeError(f"ffmpeg failed: rc={result.returncode}, stderr={result.stderr[-400:]}" )
+            except Exception as conv_err:
+                logger.warning(f'FFmpeg conversion failed, sending WAV instead: {conv_err}')
+                # Fall back to WAV: use input.wav as the audio to send
+                answer_mp3_path = filepath
+                answer_filename = 'input.wav'
+                answer_content_type = 'audio/wav'
+                answer_saved_at = datetime.now().isoformat()
+            # No transcript or assistant answer for user_audio mode
+            transcript_text = ''
+            answer_text = ''
+        else:
+            return web.json_response({'error': f"Unknown mode '{mode}'"}, status=400)
 
         # Normalize MuseTalk base URL and build process endpoint
         musetalk_base_url = str(musetalk_base_url).strip()
@@ -97,22 +267,28 @@ async def save_audio_handler(request: web.Request) -> web.Response:
         stream_url = f"{scheme}://{host}/stream_frames"
 
         form = aiohttp.FormData()
-        form.add_field('audio', open(filepath, 'rb'), filename='input.wav', content_type='audio/wav')
+        # Send audio to MuseTalk
+        form.add_field('audio', open(answer_mp3_path, 'rb'), filename=answer_filename, content_type=answer_content_type)
         form.add_field('stream_url', stream_url)
         form.add_field('fps', fps)
         form.add_field('batch_size', batch_size)
         form.add_field('bbox_shift', '0')
 
-        timeout = aiohttp.ClientTimeout(total=60)
+        timeout = aiohttp.ClientTimeout(total=120)
         async with ClientSession(timeout=timeout) as session:
             async with session.post(musetalk_url, data=form) as resp:
                 text = await resp.text()
                 return web.json_response({
                     'success': resp.status == 200,
-                    'message': 'Audio forwarded to MuseTalk',
+                    'message': 'Answer audio forwarded to MuseTalk',
                     'musetalk_response': text,
-                    'musetalk_url': musetalk_url,
                     'stream_url': stream_url,
+                    'saved_at': saved_at,
+                    'transcript': transcript_text,
+                    'answer': answer_text,
+                    'answer_audio_path': answer_mp3_path,
+                    'answer_saved_at': answer_saved_at,
+                    'answer_audio_url': f"{scheme}://{host}/uploads/{answer_filename}",
                 }, status=200 if resp.status == 200 else 502)
 
     except Exception as e:
@@ -206,12 +382,18 @@ async def options_handler(request: web.Request) -> web.Response:
     return web.Response(status=200)
 
 
+async def config_handler(request: web.Request) -> web.Response:
+    try:
+        return web.json_response({
+            'musetalk_url': MUSETALK_URL,
+        })
+    except Exception as e:
+        logger.exception('config_handler error')
+        return web.json_response({'error': str(e)}, status=500)
+
 async def probe_musetalk_handler(request: web.Request) -> web.Response:
     try:
-        data = await request.json()
-        musetalk_base_url = data.get('musetalk_url')
-        if not musetalk_base_url:
-            return web.json_response({'success': False, 'error': 'musetalk_url missing'}, status=400)
+        musetalk_base_url = MUSETALK_URL
 
         musetalk_base_url = str(musetalk_base_url).strip()
         if musetalk_base_url.endswith('/'):
@@ -388,12 +570,35 @@ def create_app() -> web.Application:
     app.router.add_post('/save_audio', save_audio_handler)
     app.router.add_post('/stream_frames', stream_frames_handler)
     app.router.add_post('/probe_musetalk', probe_musetalk_handler)
+    app.router.add_get('/config', config_handler)
     app.router.add_get('/clear_buffer', clear_buffer_handler)
     app.router.add_get('/get_frame_buffer', get_frame_buffer_handler)
     app.router.add_get('/mjpeg_stream', mjpeg_stream_handler)
+    # Serve uploads statically so the page can play answer.mp3
+    app.router.add_static('/uploads/', path=UPLOAD_FOLDER, name='uploads')
     return app
 
 
-if __name__ == '__main__':
+async def main() -> None:
     app = create_app()
-    web.run_app(app, host='0.0.0.0', port=5000)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    host = os.getenv('HOST', '0.0.0.0')
+    port = int(os.getenv('PORT', '5000'))
+    site = web.TCPSite(runner, host=host, port=port)
+    try:
+        await site.start()
+        logger.info(f"Server started on http://{host}:{port}")
+        # Wait until cancelled/terminated; cleanup in finally ensures port closes
+        await asyncio.Event().wait()
+    finally:
+        logger.info('Shutting down server and closing port...')
+        await runner.cleanup()
+        logger.info('Server shutdown complete.')
+
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info('Interrupted by user; exiting.')

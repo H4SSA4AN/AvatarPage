@@ -280,6 +280,39 @@
             background: #f8d7da;
             color: #721c24;
         }
+
+        .timeline-section {
+            margin-top: 20px;
+            padding: 16px;
+            background: #f1f3f5;
+            border-radius: 12px;
+            border: 1px solid #e9ecef;
+            text-align: left;
+        }
+
+        .timeline-section h3 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+            font-weight: 600;
+        }
+
+        .timeline-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px 18px;
+            align-items: center;
+        }
+
+        .timeline-label {
+            color: #555;
+            font-weight: 500;
+        }
+
+        .timeline-value {
+            color: #111;
+            font-variant-numeric: tabular-nums;
+        }
     </style>
 </head>
 <body>
@@ -287,6 +320,9 @@
         <!-- Left Panel - Audio Recording -->
         <div class="panel">
             <h1>Audio Recording</h1>
+            <div style="margin-top:8px; margin-bottom:16px; text-align:left; font-size: 0.95em; color:#555;">
+                <strong>MuseTalk URL:</strong> <span id="musetalkUrl">(loading...)</span>
+            </div>
 
             <div class="recorder-section">
                 <div class="timer" id="timer">00:00</div>
@@ -313,15 +349,17 @@
                         <label for="batchSizeInput">Batch Size:</label>
                         <input type="number" id="batchSizeInput" value="20" min="1" max="50" class="setting-input">
                     </div>
-                    <div class="setting-item" style="grid-column: 1 / span 2; width: 100%;">
-                        <label for="musetalkUrlInput">MuseTalk Service URL (http://IP:port):</label>
-                        <input type="text" id="musetalkUrlInput" value="http://localhost:8085" class="setting-input" placeholder="http://192.168.1.50:8085">
+                    <div class="setting-item">
+                        <label for="modeSelect">Processing Mode:</label>
+                        <select id="modeSelect" class="setting-input">
+                            <option value="pipeline" selected>Pipeline (STT → LLM → TTS)</option>
+                            <option value="realtime">Realtime (audio→audio)</option>
+                            <option value="user_audio">User Audio (send recording only)</option>
+                        </select>
                     </div>
+
                 </div>
-                <div class="controls" style="margin-top: 12px;">
-                    <button class="record-button" id="connectButton">🔌 Connect</button>
-                </div>
-                <div class="status hidden" id="connectStatus"></div>
+
 
                 <div class="limits-info">
                     <p><small>📝 Recording limits: Max 5 minutes, Max 100MB</small></p>
@@ -361,6 +399,29 @@
                 <p>Current frame: <span id="currentFrame">-</span></p>
                 <p>Playback FPS: <span id="playbackFPS">-</span></p>
             </div>
+
+            <div class="timeline-section" id="timeline">
+                <h3>Timeline</h3>
+                <div class="timeline-grid">
+                    <div class="timeline-label">Processing timer</div>
+                    <div class="timeline-value" id="processingTimer">00:00.000</div>
+
+                    <div class="timeline-label">T1: Recording stopped</div>
+                    <div class="timeline-value" id="t1Stop">-</div>
+
+                    <div class="timeline-label">T2: Audio saved</div>
+                    <div class="timeline-value" id="t2Saved">-</div>
+
+                    <div class="timeline-label">T3: First frame displayed</div>
+                    <div class="timeline-value" id="t3FirstFrame">-</div>
+
+                    <div class="timeline-label">Δ(T2 - T1)</div>
+                    <div class="timeline-value" id="deltaT2">-</div>
+
+                    <div class="timeline-label">Δ(T3 - T1)</div>
+                    <div class="timeline-value" id="deltaT3">-</div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -390,8 +451,13 @@
         const pauseButton = document.getElementById('pauseButton');
         const recordingDuration = document.getElementById('recordingDuration');
         const fileSize = document.getElementById('fileSize');
-        const connectButton = document.getElementById('connectButton');
-        const connectStatus = document.getElementById('connectStatus');
+        // Timeline elements
+        const processingTimerEl = document.getElementById('processingTimer');
+        const t1StopEl = document.getElementById('t1Stop');
+        const t2SavedEl = document.getElementById('t2Saved');
+        const t3FirstFrameEl = document.getElementById('t3FirstFrame');
+        const deltaT2El = document.getElementById('deltaT2');
+        const deltaT3El = document.getElementById('deltaT3');
         let startSignalReceived = false;
         let firstFrameDrawn = false;
         let mjpegDrawRaf = null;
@@ -403,11 +469,15 @@
         let bufferPolling = false;
         let nextFetchIndex = 0;
         let processingCompleteFlag = false;
+        // Timeline state
+        let t1StopMs = null;
+        let t2SavedMs = null;
+        let t3FirstFrameMs = null;
+        let processingTimerInterval = null;
 
         recordButton.addEventListener('click', toggleRecording);
         playButton.addEventListener('click', startPlayback);
         pauseButton.addEventListener('click', stopPlayback);
-        connectButton.addEventListener('click', connectToMusetalk);
 
         let isRecording = false;
         let mjpegStream = null;
@@ -490,6 +560,11 @@
                     recordButton.classList.remove('recording');
 
                     showStatus('Recording stopped. You can now save or record again.', 'success');
+
+                    // T1: Recording stopped
+                    t1StopMs = Date.now();
+                    updateTimeline();
+                    startProcessingTimer();
                 }
             }
         }
@@ -583,7 +658,6 @@
                     // Get settings values
                     const fps = document.getElementById('fpsInput').value;
                     const batchSize = document.getElementById('batchSizeInput').value;
-                    const musetalkUrl = document.getElementById('musetalkUrlInput').value;
 
                     const response = await fetch('/save_audio', {
                         method: 'POST',
@@ -594,7 +668,7 @@
                             audio_data: base64Data,
                             fps: fps,
                             batch_size: batchSize,
-                            musetalk_url: musetalkUrl
+                            mode: (document.getElementById('modeSelect')?.value || 'pipeline')
                         })
                     });
 
@@ -603,9 +677,28 @@
                     if (result.success) {
                         showStatus('Recording saved and sent to MuseTalk for processing', 'success');
 
+                        // T2: Answer audio saved (from backend)
+                        try {
+                            if (result.answer_saved_at) {
+                                t2SavedMs = Date.parse(result.answer_saved_at);
+                            } else {
+                                t2SavedMs = Date.now();
+                            }
+                            updateTimeline();
+                        } catch (e) { /* ignore */ }
+
                         // Clear current buffer and stop playback
                         clearFrameBuffer();
                         stopPlayback();
+
+                        // If backend provided the synthesized answer URL, load it for playback
+                        try {
+                            if (result.answer_audio_url) {
+                                // Cache-bust to ensure fresh file
+                                audioPlayer.src = result.answer_audio_url + '?' + Date.now();
+                                audioPlayer.classList.remove('hidden');
+                            }
+                        } catch (e) { /* ignore */ }
 
                         // Reset button states
                         playButton.disabled = true;
@@ -652,39 +745,7 @@
             }, 5000);
         }
 
-        function showConnectStatus(message, type) {
-            connectStatus.textContent = message;
-            connectStatus.className = `status ${type}`;
-            connectStatus.classList.remove('hidden');
-            setTimeout(() => {
-                connectStatus.classList.add('hidden');
-            }, 6000);
-        }
 
-        async function connectToMusetalk() {
-            const urlInput = document.getElementById('musetalkUrlInput');
-            const baseUrl = (urlInput.value || '').trim();
-            if (!baseUrl) {
-                showConnectStatus('Please enter a MuseTalk URL', 'error');
-                return;
-            }
-            try {
-                showConnectStatus('Connecting to MuseTalk...', 'recording');
-                const resp = await fetch('/probe_musetalk', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ musetalk_url: baseUrl })
-                });
-                const data = await resp.json();
-                if (data.success) {
-                    showConnectStatus('Connected to MuseTalk service successfully', 'success');
-                } else {
-                    showConnectStatus(`Connection failed (${data.status || 'error'})`, 'error');
-                }
-            } catch (e) {
-                showConnectStatus('Connection error: ' + (e?.message || e), 'error');
-            }
-        }
 
         function clearFrameBuffer() {
             // Stop any ongoing playback
@@ -825,6 +886,12 @@
                             console.warn('Audio start error:', e);
                         }
                         firstFrameDrawn = true;
+                        // T3: First frame displayed
+                        try {
+                            t3FirstFrameMs = Date.now();
+                            updateTimeline();
+                            stopProcessingTimer();
+                        } catch (e) { /* ignore */ }
                     }
                 } else {
                     // Log readiness state occasionally
@@ -968,6 +1035,12 @@
                                 } catch {}
                                 firstFrameDrawn = true;
                                 console.log('First frame drawn from buffer');
+                                // T3: First frame displayed
+                                try {
+                                    t3FirstFrameMs = Date.now();
+                                    updateTimeline();
+                                    stopProcessingTimer();
+                                } catch (e) { /* ignore */ }
                             }
                             
                             currentFrameIndex += 1;
@@ -1061,20 +1134,20 @@
             startBufferPolling();
             startBufferPlaybackLoop();
 
-            // Restore MuseTalk URL from localStorage
-            const urlInput = document.getElementById('musetalkUrlInput');
-            try {
-                const savedUrl = localStorage.getItem('musetalk_url');
-                if (savedUrl && urlInput) urlInput.value = savedUrl;
-            } catch {}
-            // Persist on change
-            if (urlInput) {
-                const persist = () => {
-                    try { localStorage.setItem('musetalk_url', urlInput.value || ''); } catch {}
-                };
-                urlInput.addEventListener('change', persist);
-                urlInput.addEventListener('input', persist);
-            }
+            // Fetch and display backend configuration
+            fetch('/config').then(r => r.json()).then(cfg => {
+                try {
+                    const el = document.getElementById('musetalkUrl');
+                    if (el) el.textContent = cfg.musetalk_url || '(not set)';
+                } catch {}
+            }).catch(() => {
+                try {
+                    const el = document.getElementById('musetalkUrl');
+                    if (el) el.textContent = '(error loading)';
+                } catch {}
+            });
+
+
             
             // Add debug function to window for testing
             window.debugDisplayFirstFrame = function() {
@@ -1183,6 +1256,66 @@
             canvas.classList.remove('active');
 
             updateStreamStatus('waiting', 'Playback stopped');
+        }
+
+        function startProcessingTimer() {
+            stopProcessingTimer();
+            if (!t1StopMs) return;
+            processingTimerInterval = setInterval(() => {
+                const now = Date.now();
+                const elapsed = now - t1StopMs;
+                processingTimerEl.textContent = formatDuration(elapsed);
+            }, 50);
+        }
+
+        function stopProcessingTimer() {
+            if (processingTimerInterval) {
+                clearInterval(processingTimerInterval);
+                processingTimerInterval = null;
+            }
+        }
+
+        function updateTimeline() {
+            if (t1StopMs) {
+                t1StopEl.textContent = formatTimestamp(t1StopMs);
+            } else {
+                t1StopEl.textContent = '-';
+            }
+            if (t2SavedMs) {
+                t2SavedEl.textContent = formatTimestamp(t2SavedMs);
+                if (t1StopMs) deltaT2El.textContent = formatDuration(t2SavedMs - t1StopMs);
+            } else {
+                t2SavedEl.textContent = '-';
+                deltaT2El.textContent = '-';
+            }
+            if (t3FirstFrameMs) {
+                t3FirstFrameEl.textContent = formatTimestamp(t3FirstFrameMs);
+                if (t1StopMs) deltaT3El.textContent = formatDuration(t3FirstFrameMs - t1StopMs);
+            } else {
+                t3FirstFrameEl.textContent = '-';
+                deltaT3El.textContent = '-';
+            }
+        }
+
+        function formatTimestamp(ms) {
+            try {
+                const d = new Date(ms);
+                const date = d.toLocaleDateString();
+                const time = d.toLocaleTimeString([], { hour12: false });
+                const msPart = String(d.getMilliseconds()).padStart(3, '0');
+                return `${date} ${time}.${msPart}`;
+            } catch (e) {
+                return '-';
+            }
+        }
+
+        function formatDuration(ms) {
+            const sign = ms < 0 ? '-' : '';
+            const a = Math.abs(ms);
+            const minutes = Math.floor(a / 60000);
+            const seconds = Math.floor((a % 60000) / 1000);
+            const millis = Math.floor(a % 1000);
+            return `${sign}${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}.${String(millis).padStart(3,'0')}`;
         }
 
         // Convert AudioBuffer to WAV format
