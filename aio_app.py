@@ -18,6 +18,24 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Suppress noisy access logs for high-frequency endpoints
+class _AccessPathFilter(logging.Filter):
+    def __init__(self, suppressed_paths):
+        super().__init__()
+        self._suppressed_paths = tuple(suppressed_paths)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        return not any(path in message for path in self._suppressed_paths)
+
+# Hide access logs for /get_frame_buffer only (keep other endpoints visible)
+logging.getLogger('aiohttp.access').addFilter(
+    _AccessPathFilter(['/get_frame_buffer'])
+)
+
 
 # Storage
 UPLOAD_FOLDER = 'uploads'
